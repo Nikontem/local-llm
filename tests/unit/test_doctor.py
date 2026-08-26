@@ -1,6 +1,6 @@
 import subprocess
 
-from local_llm.doctor import BREW_INSTALL, Check, Env, run_checks
+from local_llm.doctor import BREW_INSTALL, Check, Env, port_in_use, run_checks
 from local_llm.hub import TokenStatus
 from local_llm.paths import Paths
 from local_llm.settings import Settings
@@ -26,7 +26,8 @@ def mac_env(**overrides):
     outputs = {
         ("/opt/homebrew/bin/llama-server", "--version"):
             "version: 0.3.0 (build 10621, commit c1d0e7a00)\n",
-        ("/opt/homebrew/bin/llama-server", "--help"): "... --models-preset PATH ...\n",
+        ("/opt/homebrew/bin/llama-server", "--help"):
+            "... --models-preset PATH ... --list-devices ...\n",
         ("/opt/homebrew/bin/llama-server", "--list-devices"):
             "Available devices:\n  MTL0: Apple M4 Pro (38338 MiB, 38338 MiB free)\n",
     }
@@ -92,6 +93,22 @@ def test_old_llama_server_without_presets(tmp_path):
     assert "December 2025" in checks["router support"].detail
 
 
+def test_old_llama_server_without_list_devices_flag_does_not_dump_usage(tmp_path):
+    # A build predating --list-devices answers it with an error plus a full usage
+    # dump on stdout/stderr, same as it does for --models-preset. That text must
+    # not be folded into the llama-server check's detail (spec 4.2: devices are
+    # shown "when the flag exists").
+    outputs = {
+        ("/opt/homebrew/bin/llama-server", "--help"): "no such flag\n",
+        ("/opt/homebrew/bin/llama-server", "--list-devices"):
+            "error: invalid argument: --list-devices\nusage: llama-server [options]\n...\n",
+    }
+    env = mac_env(run=fake_run(outputs))
+    checks = by_name(run_checks(healthy_paths(tmp_path), Settings(), env=env))
+    assert "devices" not in checks["llama-server"].detail
+    assert "invalid argument" not in checks["llama-server"].detail
+
+
 def test_token_states(tmp_path):
     for status, expected_status, expected_fix in [
         (TokenStatus("absent"), "warn", "hf auth login"),
@@ -125,3 +142,10 @@ def test_port_states(tmp_path):
 
 def test_check_is_a_plain_record():
     assert Check("x", "ok", "fine").fix is None
+
+
+def test_port_in_use_handles_ipv6_loopback():
+    # settings.py accepts "::1" as a loopback host; binding it needs AF_INET6, not
+    # the AF_INET socket port_in_use used to open unconditionally (which raises
+    # gaierror on an IPv6 literal and used to be misread as "port in use").
+    assert port_in_use("::1", 0) is False

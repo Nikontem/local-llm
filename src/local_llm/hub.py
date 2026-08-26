@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeout
+import threading
 from dataclasses import dataclass
 
 
@@ -22,23 +21,33 @@ def token_status(timeout: float = 10.0) -> TokenStatus:
     if not token:
         return TokenStatus("absent")
 
-    def whoami() -> dict:
-        return huggingface_hub.HfApi(token=token).whoami()
+    # Run the probe on a daemon thread rather than a ThreadPoolExecutor: the pool's
+    # worker is a non-daemon thread that concurrent.futures joins at interpreter
+    # exit, so shutdown(wait=False) does not stop a blackholed whoami() call from
+    # stalling process exit long past `timeout`. A daemon thread is abandoned
+    # cleanly when the process exits, whether or not it ever finishes.
+    done = threading.Event()
+    outcome: dict[str, object] = {}
 
-    executor = ThreadPoolExecutor(max_workers=1)
-    try:
-        future = executor.submit(whoami)
+    def whoami() -> None:
         try:
-            info = future.result(timeout=timeout)
-        except FutureTimeout:
-            return TokenStatus("unreachable")
-        except HfHubHTTPError as error:
+            outcome["info"] = huggingface_hub.HfApi(token=token).whoami()
+        except Exception as error:  # noqa: BLE001 - forwarded to the caller thread below
+            outcome["error"] = error
+        finally:
+            done.set()
+
+    threading.Thread(target=whoami, daemon=True).start()
+    if not done.wait(timeout):
+        return TokenStatus("unreachable")
+
+    if "error" in outcome:
+        error = outcome["error"]
+        if isinstance(error, HfHubHTTPError):
             response = getattr(error, "response", None)
             if response is not None and getattr(response, "status_code", None) in (401, 403):
                 return TokenStatus("invalid")
-            return TokenStatus("unreachable")
-        except Exception:  # noqa: BLE001 - any network failure means "could not check"
-            return TokenStatus("unreachable")
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+        return TokenStatus("unreachable")
+
+    info = outcome.get("info")
     return TokenStatus("valid", info.get("name") if isinstance(info, dict) else None)

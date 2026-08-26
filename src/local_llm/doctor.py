@@ -36,7 +36,12 @@ class Check:
 
 def port_in_use(host: str, port: int) -> bool:
     address = "127.0.0.1" if host == "localhost" else host
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    # AF_INET can't bind an IPv6 literal like "::1" (settings.py allows it as a
+    # loopback host) - it raises socket.gaierror, an OSError subclass, which would
+    # otherwise be mistaken for "port is in use". Resolve the address first and
+    # bind with whatever family it actually is.
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((address, port))
@@ -101,13 +106,18 @@ def run_checks(
     # llama-server
     server = env.which("llama-server")
     if server:
+        help_text = _output(env, server, "--help")
         version = _output(env, server, "--version").strip().splitlines()
         detail = f"{server} - {version[0] if version else 'unknown version'}"
-        devices = _devices(env, server)
-        if devices:
-            detail += f"; devices: {devices}"
+        # Only ask for devices when the flag exists (spec 4.2): an old build that
+        # doesn't know --list-devices prints "error: invalid argument" plus a full
+        # usage dump instead, which _devices would otherwise fold into this detail.
+        if "--list-devices" in help_text:
+            devices = _devices(env, server)
+            if devices:
+                detail += f"; devices: {devices}"
         checks.append(Check("llama-server", "ok", detail))
-        if "--models-preset" in _output(env, server, "--help"):
+        if "--models-preset" in help_text:
             checks.append(Check("router support", "ok", "--models-preset available"))
         else:
             checks.append(Check(
