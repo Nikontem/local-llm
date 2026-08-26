@@ -1208,11 +1208,16 @@ def setup(
     )
 
     def do_pull(machine: Machine, repo: str, option: QuantOption) -> str:
+        section = section_name(repo, option.primary)
+        preset = _preset_or_none(st)
+        if preset is not None and preset.has_section(section):
+            out.print(f"  {section} already in models.ini, skipped")
+            return section
         _pull(
             st, hub, machine, repo, option,
             name=None, context=None, extra=[], no_tuning=False, yes=True,
         )
-        return section_name(repo, option.primary)
+        return section
 
     ctx = SetupContext(
         paths=st.paths,
@@ -1220,7 +1225,7 @@ def setup(
         io=io,
         env=Env(),
         hub=hub,
-        detect=lambda reserve: detect(reserve),
+        detect=lambda reserve: _machine(st),
         router=st.router,
         which=shutil.which,
         recommend=lambda machine, preset, use_: gather(
