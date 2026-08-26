@@ -12,14 +12,13 @@ from pathlib import Path
 
 from .discover import GROUPS, Candidate
 from .doctor import Check, Env, run_checks
-from .estimate import estimate_bytes, human_gb
+from .estimate import human_gb
 from .hardware import Machine
 from .hub import Hub, HubError
 from .paths import Paths
 from .preset import Preset, PresetError
 from .quant import QuantError, QuantOption, find_option, quant_options, suggest
 from .router import Router, RouterError
-from .sections import section_name
 from .settings import Settings, save_settings
 
 
@@ -111,29 +110,43 @@ def step_prerequisites(ctx: SetupContext) -> dict[str, Check]:
     server = checks["llama-server"]
     if server.status == "fail":
         if server.fix_cmd and io.confirm_or_default(
-            f"llama-server is missing. Install llama.cpp now with: {' '.join(server.fix_cmd)} ?", True
+            f"llama-server is missing. Install llama.cpp now with: "
+            f"{' '.join(server.fix_cmd)} ?",
+            True,
         ):
             if io.run(server.fix_cmd) != 0:
-                raise SetupAbort(f"{' '.join(server.fix_cmd)} failed. Fix that, then run local-llm setup again.")
+                raise SetupAbort(
+                    f"{' '.join(server.fix_cmd)} failed. Fix that, then run local-llm setup again."
+                )
             checks = {c.name: c for c in run_checks(ctx.paths, ctx.settings, env=ctx.env)}
             server = checks["llama-server"]
             io.say(_check_line(server))
             if server.status == "fail":
-                raise SetupAbort("llama-server is still not on PATH after the install. Open a new shell and run local-llm setup again.")
+                raise SetupAbort(
+                    "llama-server is still not on PATH after the install. "
+                    "Open a new shell and run local-llm setup again."
+                )
         else:
             raise SetupAbort(server.fix or "Install llama.cpp, then run local-llm setup again.")
     if checks.get("router support") and checks["router support"].status == "fail":
-        raise SetupAbort(checks["router support"].detail + "\n  " + (checks["router support"].fix or ""))
+        raise SetupAbort(
+            checks["router support"].detail + "\n  " + (checks["router support"].fix or "")
+        )
 
     hf = checks["hf"]
     if hf.status == "warn" and hf.fix_cmd:
-        io.say("  The hf command is optional: this tool downloads with the same library. It is handy for `hf auth login`.")
+        io.say(
+            "  The hf command is optional: this tool downloads with the same library. "
+            "It is handy for `hf auth login`."
+        )
         if io.confirm_or_default(f"Install it now with: {' '.join(hf.fix_cmd)} ?", True):
             io.run(hf.fix_cmd)
 
     token = checks["hf token"]
     if token.status == "warn" and token.fix:
-        io.say("  Some repositories on Hugging Face are gated: the author asks you to accept terms,")
+        io.say(
+            "  Some repositories on Hugging Face are gated: the author asks you to accept terms,"
+        )
         io.say("  which needs a free account and a token. Everything else works without one.")
         if io.confirm_or_default(f"Log in now with: {token.fix} ?", False):
             io.run(token.fix.split())
@@ -187,9 +200,15 @@ def _resolve_preselected(ctx: SetupContext, machine: Machine, spec: str) -> tupl
 
 def _candidate_line(candidate: Candidate, machine: Machine) -> str:
     option = candidate.suggested
-    marks = ", ".join(m for m, on in (("thinking", candidate.thinking), ("vision", candidate.vision)) if on)
+    marks = ", ".join(
+        m for m, on in (("thinking", candidate.thinking), ("vision", candidate.vision)) if on
+    )
     marks = f" ({marks})" if marks else ""
-    state = "  · in models.ini" if candidate.configured else ("  · downloaded" if candidate.downloaded else "")
+    state = (
+        "  · in models.ini"
+        if candidate.configured
+        else ("  · downloaded" if candidate.downloaded else "")
+    )
     if option is None:
         return f"{candidate.display_name}{marks}  {candidate.repo_id}"
     return (
@@ -228,7 +247,9 @@ def step_models(
                     continue
                 numbered.append(candidate)
                 io.say(f"   {len(numbered):>2}. {_candidate_line(candidate, machine)}")
-        answer = io.ask("  Numbers to download (e.g. 1 3), s <text> to search, n for none", "n").strip()
+        answer = io.ask(
+            "  Numbers to download (e.g. 1 3), s <text> to search, n for none", "n"
+        ).strip()
         if answer.lower() in ("n", "none", ""):
             return []
         if answer.lower().startswith("s "):
@@ -263,7 +284,9 @@ def step_models(
 # ---------------------------------------------------------------- 4. download
 
 
-def step_download(ctx: SetupContext, machine: Machine, chosen: list[tuple[str, QuantOption]]) -> list[str]:
+def step_download(
+    ctx: SetupContext, machine: Machine, chosen: list[tuple[str, QuantOption]]
+) -> list[str]:
     added: list[str] = []
     if chosen:
         _header(ctx.io, "4. Download and configure")
@@ -283,8 +306,11 @@ def step_settings(ctx: SetupContext, default_model: str) -> Path:
     ctx.settings.default_model = default_model
     written = save_settings(ctx.paths, ctx.settings)
     ctx.io.say(f"  wrote {written}")
-    ctx.io.say(f"  port {ctx.settings.port}, {ctx.settings.reserve_gb} GB reserved, "
-               f"{ctx.settings.max_models} model(s) resident at once, default model: {default_model or 'none'}")
+    ctx.io.say(
+        f"  port {ctx.settings.port}, {ctx.settings.reserve_gb} GB reserved, "
+        f"{ctx.settings.max_models} model(s) resident at once, "
+        f"default model: {default_model or 'none'}"
+    )
     return written
 
 
@@ -326,7 +352,9 @@ def step_start(ctx: SetupContext, preset: Preset) -> None:
         return
     io.say("  Router is already running." if result.already_running else "  Router is up.")
     model = smallest_model(preset)
-    if model and io.confirm_or_default(f"Send a test request to {model}? It loads the model first.", True):
+    if model and io.confirm_or_default(
+        f"Send a test request to {model}? It loads the model first.", True
+    ):
         try:
             reply = router.chat(model, "Say hello in three words.", max_tokens=12)
             content = ((reply.get("choices") or [{}])[0].get("message") or {}).get("content")

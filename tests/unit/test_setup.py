@@ -1,17 +1,15 @@
-from pathlib import Path
 
-from local_llm.doctor import Check, Env
+from local_llm.doctor import Env
 from local_llm.estimate import GIB
 from local_llm.hardware import Machine
 from local_llm.hub import Hub, TokenStatus
 from local_llm.paths import Paths
 from local_llm.preset import Preset
-from local_llm.quant import quant_options
 from local_llm.router import Router
-from local_llm.settings import Settings, load_settings
+from local_llm.settings import load_settings
 from local_llm.setup import Io, SetupAbort, SetupContext, run_setup, smallest_model, step_models
 
-from .fakes import FakeApi, FakeBackend, FakeHttp, fake_model
+from .fakes import FakeApi, FakeBackend, FakeHttp
 from .test_discover import MODELS
 
 MAC = Machine("Darwin", "arm64", "Apple M4 Pro", 48 * GIB, "apple", 48 * GIB, 20, 10)
@@ -40,18 +38,39 @@ class Script:
 
 
 def make_ctx(tmp_path, script, *, yes=False, tools=None, token="valid", backend=None, http=None):
-    tools = tools if tools is not None else {"brew": "/opt/homebrew/bin/brew", "llama-server": "/opt/homebrew/bin/llama-server", "hf": "/opt/homebrew/bin/hf", "opencode": "/usr/local/bin/opencode", "claude": "/usr/local/bin/claude"}
+    tools = (
+        tools
+        if tools is not None
+        else {
+            "brew": "/opt/homebrew/bin/brew",
+            "llama-server": "/opt/homebrew/bin/llama-server",
+            "hf": "/opt/homebrew/bin/hf",
+            "opencode": "/usr/local/bin/opencode",
+            "claude": "/usr/local/bin/claude",
+        }
+    )
     paths = Paths.from_env(env={}, home=tmp_path)
     settings = load_settings(paths, env={})
     hub = Hub(api=FakeApi(MODELS), cache=None, cached_path_fn=lambda repo, name: None)
     backend = backend or FakeBackend()
     backend.spawn_listening = {5678}
-    http = http or FakeHttp({("GET", "/health"): {"status": "ok"}, ("POST", "/v1/chat/completions"): {"choices": [{"message": {"content": "Hello there friend"}}]}})
+    http = http or FakeHttp(
+        {
+            ("GET", "/health"): {"status": "ok"},
+            ("POST", "/v1/chat/completions"): {
+                "choices": [{"message": {"content": "Hello there friend"}}]
+            },
+        }
+    )
     pulled: list[tuple[str, str]] = []
     integrations: list[str] = []
 
     def outputs(binary, flag):
-        return {"--version": "version: 0.3.0\n", "--help": "--models-preset --list-devices\n", "--list-devices": "Available devices:\n  MTL0: Apple M4 Pro (38338 MiB)\n"}.get(flag, "")
+        return {
+            "--version": "version: 0.3.0\n",
+            "--help": "--models-preset --list-devices\n",
+            "--list-devices": "Available devices:\n  MTL0: Apple M4 Pro (38338 MiB)\n",
+        }.get(flag, "")
 
     import subprocess
 
@@ -65,7 +84,11 @@ def make_ctx(tmp_path, script, *, yes=False, tools=None, token="valid", backend=
     def pull(machine, repo, option):
         section = f"{repo}:{option.tag}"
         pulled.append((repo, option.label))
-        preset = Preset.parse(paths.preset.read_text()) if paths.preset.is_file() else Preset.parse("[*]\njinja = true\n")
+        preset = (
+            Preset.parse(paths.preset.read_text())
+            if paths.preset.is_file()
+            else Preset.parse("[*]\njinja = true\n")
+        )
         model = tmp_path / f"{option.primary}"
         model.write_bytes(b"x" * 16)
         preset.add_section(section, [("model", str(model)), ("c", "8192")])
@@ -77,15 +100,24 @@ def make_ctx(tmp_path, script, *, yes=False, tools=None, token="valid", backend=
 
     ctx = SetupContext(
         paths=paths, settings=settings, io=script.io(yes=yes), env=env, hub=hub,
-        detect=lambda reserve: Machine("Darwin", "arm64", "Apple M4 Pro", 48 * GIB, "apple", 48 * GIB, 20, reserve),
-        router=lambda: Router(paths, settings, backend=backend, http=http, binary="/opt/bin/llama-server", sleep=lambda s: None),
+        detect=lambda reserve: Machine(
+            "Darwin", "arm64", "Apple M4 Pro", 48 * GIB, "apple", 48 * GIB, 20, reserve
+        ),
+        router=lambda: Router(
+            paths, settings, backend=backend, http=http,
+            binary="/opt/bin/llama-server", sleep=lambda s: None,
+        ),
         which=lambda n: tools.get(n),
         recommend=lambda machine, preset, use: gather(hub, machine, preset, limit_per_group=2),
-        search=lambda machine, preset, text: discover_search(hub, machine, preset, text=text, limit=5),
+        search=lambda machine, preset, text: discover_search(
+            hub, machine, preset, text=text, limit=5
+        ),
         choose_quant=lambda options, suggested, machine: suggested,
         pull=pull,
-        integrate_shell=lambda shell: integrations.append(f"shell:{shell}") or [f"completion for {shell} installed"],
-        integrate_opencode=lambda: integrations.append("opencode") or ["opencode plugin installed"],
+        integrate_shell=lambda shell: integrations.append(f"shell:{shell}")
+        or [f"completion for {shell} installed"],
+        integrate_opencode=lambda: integrations.append("opencode")
+        or ["opencode plugin installed"],
     )
     ctx.pulled = pulled  # type: ignore[attr-defined]
     ctx.integrations = integrations  # type: ignore[attr-defined]
@@ -104,10 +136,20 @@ def test_full_run_with_yes_and_a_preselected_model(tmp_path):
     assert "1. Prerequisites" in text and "logged in as nikos" in text
     assert "Apple M4 Pro, 20 GPU cores, 48 GB unified memory" in text
     assert ctx.paths.settings_file.is_file()
-    assert 'default_model = "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q8_0"' in ctx.paths.settings_file.read_text()
+    settings_text = ctx.paths.settings_file.read_text()
+    assert 'default_model = "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q8_0"' in settings_text
     assert ctx.integrations == ["shell:zsh", "opencode"]
     assert ctx.backend.spawned, "router was started"
-    assert ("POST", "/v1/chat/completions", {"model": "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q8_0", "messages": [{"role": "user", "content": "Say hello in three words."}], "max_tokens": 12}) in ctx.http.calls
+    expected_call = (
+        "POST",
+        "/v1/chat/completions",
+        {
+            "model": "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q8_0",
+            "messages": [{"role": "user", "content": "Say hello in three words."}],
+            "max_tokens": 12,
+        },
+    )
+    assert expected_call in ctx.http.calls
     assert "Hello there friend" in text
     assert "http://127.0.0.1:5678/v1" in text and "local-llm status" in text
 
@@ -127,7 +169,20 @@ def test_interactive_pick_from_recommendations_and_reserve_change(tmp_path):
     assert run_setup(ctx) == 0, script.text()
     assert ctx.settings.reserve_gb == 12
     assert "36 GB usable" in script.text()
-    assert len(ctx.pulled) == 1 and ctx.pulled[0][0] == "unsloth/Qwen3.5-4B-GGUF" or ctx.pulled[0][0] in {c for c in ("unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF", "unsloth/gemma-4-31B-it-GGUF", "unsloth/Qwen3.8-27B-GGUF", "Qwen/Qwen2.5-1.5B-Instruct-GGUF")}
+    accepted_vendor_repos = {
+        c
+        for c in (
+            "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+            "unsloth/gemma-4-31B-it-GGUF",
+            "unsloth/Qwen3.8-27B-GGUF",
+            "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+        )
+    }
+    assert (
+        len(ctx.pulled) == 1
+        and ctx.pulled[0][0] == "unsloth/Qwen3.5-4B-GGUF"
+        or ctx.pulled[0][0] in accepted_vendor_repos
+    )
 
 
 def test_search_then_skip(tmp_path):

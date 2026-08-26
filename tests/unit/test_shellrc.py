@@ -1,8 +1,17 @@
-from pathlib import Path
 
 from local_llm.shellrc import (
-    MARK_BEGIN, MARK_END, RETIRED_PREFIX, alias_lines, block_text, completion_script,
-    detect_shell, old_source_lines, rc_file, remove_block, retire_old_source, upsert_block,
+    MARK_BEGIN,
+    MARK_END,
+    RETIRED_PREFIX,
+    alias_lines,
+    block_text,
+    completion_script,
+    detect_shell,
+    old_source_lines,
+    rc_file,
+    remove_block,
+    retire_old_source,
+    upsert_block,
 )
 
 
@@ -40,7 +49,8 @@ def test_upsert_block_replaces_in_place_and_appends_once():
 def test_retire_old_source_lines():
     text = (
         "# shell setup\n"
-        '[[ -r "$HOME/.config/local-llm/local_llm.zsh" ]] && source "$HOME/.config/local-llm/local_llm.zsh"\n'
+        '[[ -r "$HOME/.config/local-llm/local_llm.zsh" ]] '
+        '&& source "$HOME/.config/local-llm/local_llm.zsh"\n'
         "source ~/other.zsh\n"
         ". /Users/me/.config/local-llm/local_llm.zsh\n"
     )

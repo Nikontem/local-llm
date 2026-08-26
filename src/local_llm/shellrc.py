@@ -15,7 +15,11 @@ SHELLS = ("zsh", "bash", "fish")
 PROG_NAME = "local-llm"
 COMPLETE_VAR = "_LOCAL_LLM_COMPLETE"
 _OLD_SOURCE = re.compile(r"^\s*(\[\[.*\]\]\s*&&\s*)?(source|\.)\s+.*local-llm/local_llm\.zsh")
-_ALIASES = [("local_llm", "local-llm"), ("claude_local", "local-llm claude"), ("copilot_local", "local-llm copilot")]
+_ALIASES = [
+    ("local_llm", "local-llm"),
+    ("claude_local", "local-llm claude"),
+    ("copilot_local", "local-llm copilot"),
+]
 
 
 def detect_shell(env: Mapping[str, str] | None = None, system: str | None = None) -> str:
