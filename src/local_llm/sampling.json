@@ -1,0 +1,56 @@
+{
+  "profiles": {
+    "qwen3.8": {
+      "values": {"temp": "1.0", "top-k": "20", "top-p": "0.95", "min-p": "0", "presence-penalty": "0.0", "repeat-penalty": "1.0", "reasoning-format": "deepseek", "reasoning-effort": "medium"},
+      "source": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF"
+    },
+    "qwen3-instruct": {
+      "values": {"temp": "0.7", "top-k": "20", "top-p": "0.8", "min-p": "0", "repeat-penalty": "1.05"},
+      "source": "https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
+    },
+    "qwen3-thinking": {
+      "values": {"temp": "0.6", "top-k": "20", "top-p": "0.95", "min-p": "0", "presence-penalty": "0.0", "repeat-penalty": "1.0", "reasoning-format": "deepseek"},
+      "source": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF"
+    },
+    "qwen2.5-small": {
+      "values": {"temp": "0.7", "top-k": "20", "top-p": "0.8", "min-p": "0", "repeat-penalty": "1.1"},
+      "source": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+    },
+    "gemma": {
+      "values": {"temp": "1.0", "top-k": "64", "top-p": "0.95", "min-p": "0", "repeat-penalty": "1.0"},
+      "source": "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF"
+    },
+    "llama3": {
+      "values": {"temp": "0.6", "top-p": "0.9"},
+      "source": "https://github.com/meta-llama/llama-models"
+    },
+    "mistral": {
+      "values": {"temp": "0.15"},
+      "source": "https://huggingface.co/mistralai"
+    },
+    "gpt-oss": {
+      "values": {"temp": "1.0", "top-p": "1.0", "top-k": "0", "min-p": "0.01", "chat-template-kwargs": "{\"reasoning_effort\": \"high\"}"},
+      "source": "https://github.com/ggml-org/llama.cpp/blob/master/docs/preset.md"
+    },
+    "deepseek-r1": {
+      "values": {"temp": "0.6", "top-p": "0.95", "reasoning-format": "deepseek"},
+      "source": "https://huggingface.co/deepseek-ai/DeepSeek-R1"
+    }
+  },
+  "rules": [
+    {"contains": ["qwen3.8"], "profile": "qwen3.8"},
+    {"contains": ["qwen3", "coder"], "profile": "qwen3-instruct"},
+    {"contains": ["qwen3", "instruct"], "profile": "qwen3-instruct"},
+    {"contains": ["qwen3"], "profile": "qwen3-thinking"},
+    {"contains": ["qwen2.5"], "profile": "qwen2.5-small"},
+    {"contains": ["gemma"], "profile": "gemma"},
+    {"contains": ["llama-3"], "profile": "llama3"},
+    {"contains": ["llama3"], "profile": "llama3"},
+    {"contains": ["mistral"], "profile": "mistral"},
+    {"contains": ["devstral"], "profile": "mistral"},
+    {"contains": ["magistral"], "profile": "mistral"},
+    {"contains": ["ministral"], "profile": "mistral"},
+    {"contains": ["gpt-oss"], "profile": "gpt-oss"},
+    {"contains": ["deepseek-r1"], "profile": "deepseek-r1"}
+  ]
+}
