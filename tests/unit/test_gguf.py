@@ -4,7 +4,11 @@ import pytest
 
 from local_llm.estimate import GIB, estimate_bytes
 from local_llm.gguf import (
-    GgufError, GgufHeader, header_from_kv, kv_bytes, read_header, refined_estimate,
+    GgufError,
+    header_from_kv,
+    kv_bytes,
+    read_header,
+    refined_estimate,
     suggest_context,
 )
 
@@ -69,7 +73,9 @@ BUDGET = 38 * GIB
 
 def test_read_header_parses_real_layout(tmp_path):
     path = tmp_path / "m.gguf"
-    write_gguf(path, {**QWEN38, "tokenizer.ggml.tokens": ["a", "b"], "tokenizer.ggml.scores": [1, 2]})
+    write_gguf(
+        path, {**QWEN38, "tokenizer.ggml.tokens": ["a", "b"], "tokenizer.ggml.scores": [1, 2]}
+    )
     h = read_header(path)
     assert h.architecture == "qwen35" and h.block_count == 65 and h.context_length == 262144
     assert h.kv_heads == 4 and h.key_length == 256 and h.value_length == 256
