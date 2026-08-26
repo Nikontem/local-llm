@@ -118,6 +118,7 @@ def make_ctx(tmp_path, script, *, yes=False, tools=None, token="valid", backend=
         or [f"completion for {shell} installed"],
         integrate_opencode=lambda: integrations.append("opencode")
         or ["opencode plugin installed"],
+        shell="zsh",
     )
     ctx.pulled = pulled  # type: ignore[attr-defined]
     ctx.integrations = integrations  # type: ignore[attr-defined]
