@@ -6,7 +6,7 @@ def test_estimate_matches_the_measured_rule():
     file_17_6_gb = int(17.6 * GIB)
     est = estimate_bytes([file_17_6_gb])
     assert est == file_17_6_gb * 115 // 100 + GIB
-    assert 20.0 * GIB < est < 21.5 * GIB  # a 17.6 GB file settles near 19.9 GB resident; we err high
+    assert 20.0 * GIB < est < 21.5 * GIB  # a 17.6 GB file settles near 19.9 GB resident; err high
 
 
 def test_estimate_sums_several_files():
