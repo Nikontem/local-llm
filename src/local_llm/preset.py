@@ -40,8 +40,18 @@ def _strip_comment(line: str) -> str:
 
 
 class Preset:
-    def __init__(self, lines: list[_Line] | None = None) -> None:
+    def __init__(
+        self,
+        lines: list[_Line] | None = None,
+        newline: str = "\n",
+        trailing_newline: bool = True,
+    ) -> None:
         self._lines: list[_Line] = lines or []
+        # What line terminator the source text used, and whether its last line
+        # had one. dump() reproduces both, so parse-then-write with no edits
+        # is byte identical (spec 10) instead of always appending "\n".
+        self._newline = newline
+        self._trailing_newline = trailing_newline
 
     # ------------------------------------------------------------ parse / dump
 
@@ -68,7 +78,14 @@ class Preset:
                 lines.append(_Line(raw, "kv", current, key.strip(), value.strip()))
                 continue
             lines.append(_Line(raw, "other", current))
-        return cls(lines)
+        if "\r\n" in text:
+            newline = "\r\n"
+        elif "\r" in text:
+            newline = "\r"
+        else:
+            newline = "\n"
+        trailing_newline = text.endswith(("\n", "\r")) if text else True
+        return cls(lines, newline=newline, trailing_newline=trailing_newline)
 
     @classmethod
     def load(cls, path: Path) -> Preset:
@@ -82,7 +99,12 @@ class Preset:
         return cls.parse(text)
 
     def dump(self) -> str:
-        return "".join(line.raw + "\n" for line in self._lines)
+        if not self._lines:
+            return ""
+        body = self._newline.join(line.raw for line in self._lines)
+        if self._trailing_newline:
+            body += self._newline
+        return body
 
     # ------------------------------------------------------------ queries
 
@@ -153,6 +175,23 @@ class Preset:
             i -= 1
         return i
 
+    def _content_end(self, start: int, end: int) -> int:
+        """Where a section's own lines actually stop.
+
+        `_span` sets `end` to the index of the *next* header (or the end of
+        the file), so the half-open range [start, end) also contains that
+        next header's leading comment and the blank line before it - lines
+        that belong to the section after this one, not to this one. Walk
+        `end` back over the next header's leading comments first, then over
+        blank layout lines, so only this section's own content remains.
+        """
+        boundary = end
+        if boundary < len(self._lines):
+            boundary = self._leading_comment_start(boundary)
+        while boundary > start + 1 and self._lines[boundary - 1].kind == "blank":
+            boundary -= 1
+        return boundary
+
     @staticmethod
     def _section_lines(
         name: str, keys: Sequence[tuple[str, str]], comments: Sequence[str]
@@ -177,17 +216,14 @@ class Preset:
         self, name: str, keys: Sequence[tuple[str, str]], comments: Sequence[str] = ()
     ) -> None:
         start, end = self._span(name)
-        # Trailing blank lines belong to the layout, not to the section.
-        body_end = end
-        while body_end > start + 1 and self._lines[body_end - 1].kind == "blank":
-            body_end -= 1
+        body_end = self._content_end(start, end)
         lead = self._leading_comment_start(start)
         self._lines[lead:body_end] = self._section_lines(name, keys, comments)
 
     def remove_section(self, name: str) -> None:
         start, end = self._span(name)
         lead = self._leading_comment_start(start)
-        del self._lines[lead:end]
+        del self._lines[lead : self._content_end(start, end)]
         # Two blank lines now touching each other read as a hole; keep one.
         if lead > 0 and lead < len(self._lines):
             if self._lines[lead - 1].kind == "blank" and self._lines[lead].kind == "blank":

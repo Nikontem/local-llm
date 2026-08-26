@@ -55,3 +55,40 @@ def test_save_creates_parent_directory(tmp_path):
     p = Preset.parse("[*]\njinja = true\n")
     p.save(target)
     assert target.read_text() == "[*]\njinja = true\n"
+
+
+def test_remove_section_keeps_the_next_section_comment():
+    # A comment directly above the section that FOLLOWS the one being removed
+    # documents that next section, not the one being deleted.
+    text = (
+        "[*]\njinja = true\n\n"
+        "# coding model\n[a]\nmodel = /m/a.gguf\n\n"
+        "# vision model, hand tuned\n[b]\nmodel = /m/b.gguf\n"
+    )
+    p = Preset.parse(text)
+    p.remove_section("a")
+    assert p.dump() == "[*]\njinja = true\n\n# vision model, hand tuned\n[b]\nmodel = /m/b.gguf\n"
+
+
+def test_replace_section_keeps_the_next_section_comment():
+    text = (
+        "[*]\njinja = true\n\n"
+        "# coding model\n[a]\nmodel = /m/a.gguf\n\n"
+        "# vision model, hand tuned\n[b]\nmodel = /m/b.gguf\n"
+    )
+    p = Preset.parse(text)
+    p.replace_section("a", [("model", "/m/a2.gguf")])
+    assert p.dump() == (
+        "[*]\njinja = true\n\n[a]\nmodel = /m/a2.gguf\n\n"
+        "# vision model, hand tuned\n[b]\nmodel = /m/b.gguf\n"
+    )
+
+
+def test_dump_preserves_missing_trailing_newline():
+    text = "[a]\nmodel = /m/a.gguf"
+    assert Preset.parse(text).dump() == text
+
+
+def test_dump_preserves_crlf_line_endings():
+    text = "[a]\r\nmodel = /m/a.gguf\r\n"
+    assert Preset.parse(text).dump() == text
