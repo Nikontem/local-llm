@@ -70,6 +70,17 @@ def _output(env: Env, binary: str, flag: str) -> str:
     return (result.stdout or "") + (result.stderr or "")
 
 
+def _runs(env: Env, binary: str) -> bool:
+    """False when the binary cannot even print its help (missing library, wrong architecture)."""
+    try:
+        result = env.run([binary, "--help"], capture_output=True, text=True, timeout=_TOOL_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    text = (result.stdout or "") + (result.stderr or "")
+    broken = ("error while loading", "cannot execute", "Exec format error", "not found")
+    return bool(text.strip()) and not any(marker in text for marker in broken)
+
+
 def _devices(env: Env, binary: str) -> str:
     lines = [line.strip() for line in _output(env, binary, "--list-devices").splitlines()]
     devices = [line for line in lines if line and not line.startswith("Available devices")]
@@ -105,7 +116,16 @@ def run_checks(
 
     # llama-server
     server = env.which("llama-server")
-    if server:
+    if server and not _runs(env, server):
+        first = (_output(env, server, "--version").strip().splitlines() or ["no output"])[0]
+        checks.append(Check(
+            "llama-server", "fail", f"{server} does not run: {first}",
+            fix=(
+                "reinstall llama.cpp; the binary is missing a shared library"
+                " or was built for another machine"
+            ),
+        ))
+    elif server:
         help_text = _output(env, server, "--help")
         version = _output(env, server, "--version").strip().splitlines()
         detail = f"{server} - {version[0] if version else 'unknown version'}"

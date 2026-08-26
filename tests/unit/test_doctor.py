@@ -149,3 +149,17 @@ def test_port_in_use_handles_ipv6_loopback():
     # the AF_INET socket port_in_use used to open unconditionally (which raises
     # gaierror on an IPv6 literal and used to be misread as "port in use").
     assert port_in_use("::1", 0) is False
+
+
+def test_llama_server_that_cannot_run_is_reported_as_such(tmp_path):
+    import subprocess as sp
+
+    def broken_run(args, **kwargs):
+        text = "llama-server: error while loading shared libraries: libgomp.so.1: cannot open"
+        return sp.CompletedProcess(args, 127, stdout="", stderr=text + "\n")
+
+    checks = by_name(run_checks(healthy_paths(tmp_path), Settings(), env=mac_env(run=broken_run)))
+    assert checks["llama-server"].status == "fail"
+    assert "does not run" in checks["llama-server"].detail
+    assert "libgomp" in checks["llama-server"].detail
+    assert "router support" not in checks
