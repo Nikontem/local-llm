@@ -1,8 +1,10 @@
 #!/bin/bash
 # Runs inside the container as the "tester" user. Every step must pass.
 set -euo pipefail
-MODEL="Qwen/Qwen2.5-0.5B-Instruct-GGUF"
-SECTION="${MODEL}:Q4_K_M"
+# Any small GGUF repo works; override when a CDN edge throttles the default.
+MODEL="${E2E_MODEL:-Qwen/Qwen2.5-0.5B-Instruct-GGUF}"
+QUANT="${E2E_QUANT:-Q4_K_M}"
+SECTION="${MODEL}:${QUANT}"
 
 step() { printf '\n=== %s ===\n' "$*"; }
 
@@ -10,7 +12,7 @@ step "version"; local-llm --version
 step "doctor"; local-llm doctor || true      # warns about brew/token on Linux; must not crash
 local-llm doctor --json | jq -e '.[] | select(.name=="llama-server") | .status == "ok"' >/dev/null
 step "recommend"; local-llm recommend --use small --limit 2
-step "pull"; local-llm pull "${MODEL}:Q4_K_M" --yes
+step "pull"; local-llm pull "${MODEL}:${QUANT}" --yes
 grep -q "^\[${SECTION}\]" "$HOME/.config/local-llm/models.ini"
 step "up"; local-llm up
 step "load"; local-llm load "$SECTION"
