@@ -60,7 +60,7 @@ def token_status(timeout: float = 10.0) -> TokenStatus:
     return TokenStatus("valid", info.get("name") if isinstance(info, dict) else None)
 
 
-STALL_SECONDS = 120.0  # a download that has not grown for this long is reported, not waited on
+STALL_SECONDS = 180.0  # a download that has not grown for this long is reported, not waited on
 LIST_EXPAND = [
     "author", "downloads", "likes", "trendingScore", "pipeline_tag", "gated", "tags",
     "baseModels", "gguf",
