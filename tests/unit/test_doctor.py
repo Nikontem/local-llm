@@ -17,15 +17,25 @@ def fake_run(outputs):
 
 
 def mac_env(**overrides):
-    tools = {"brew": "/opt/homebrew/bin/brew", "llama-server": "/opt/homebrew/bin/llama-server",
-             "hf": "/opt/homebrew/bin/hf", "claude": "/usr/local/bin/claude"}
-    outputs = {
-        ("/opt/homebrew/bin/llama-server", "--version"): "version: 0.3.0 (build 10621, commit c1d0e7a00)\n",
-        ("/opt/homebrew/bin/llama-server", "--help"): "... --models-preset PATH ...\n",
-        ("/opt/homebrew/bin/llama-server", "--list-devices"): "Available devices:\n  MTL0: Apple M4 Pro (38338 MiB, 38338 MiB free)\n",
+    tools = {
+        "brew": "/opt/homebrew/bin/brew",
+        "llama-server": "/opt/homebrew/bin/llama-server",
+        "hf": "/opt/homebrew/bin/hf",
+        "claude": "/usr/local/bin/claude",
     }
-    env = Env(system="Darwin", machine="arm64", which=lambda name: tools.get(name), run=fake_run(outputs),
-              token_status=lambda: TokenStatus("valid", "nikos"), port_in_use=lambda host, port: False)
+    outputs = {
+        ("/opt/homebrew/bin/llama-server", "--version"):
+            "version: 0.3.0 (build 10621, commit c1d0e7a00)\n",
+        ("/opt/homebrew/bin/llama-server", "--help"): "... --models-preset PATH ...\n",
+        ("/opt/homebrew/bin/llama-server", "--list-devices"):
+            "Available devices:\n  MTL0: Apple M4 Pro (38338 MiB, 38338 MiB free)\n",
+    }
+    env = Env(
+        system="Darwin", machine="arm64", which=lambda name: tools.get(name),
+        run=fake_run(outputs),
+        token_status=lambda: TokenStatus("valid", "nikos"),
+        port_in_use=lambda host, port: False,
+    )
     for key, value in overrides.items():
         setattr(env, key, value)
     return env
@@ -46,7 +56,8 @@ def healthy_paths(tmp_path):
 def test_everything_ok_on_a_healthy_mac(tmp_path):
     checks = by_name(run_checks(healthy_paths(tmp_path), Settings(), env=mac_env()))
     assert all(c.status == "ok" for c in checks.values()), checks
-    assert "0.3.0" in checks["llama-server"].detail and "Apple M4 Pro" in checks["llama-server"].detail
+    assert "0.3.0" in checks["llama-server"].detail
+    assert "Apple M4 Pro" in checks["llama-server"].detail
     assert checks["router support"].status == "ok"
     assert checks["hf token"].detail == "logged in as nikos"
     assert checks["models.ini"].detail == "1 model(s), all files present"

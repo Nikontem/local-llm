@@ -18,7 +18,8 @@ BREW_INSTALL = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Hom
 LINUX_LLAMA_HELP = (
     "Install llama.cpp one of these ways:\n"
     "    brew install llama.cpp                                  (Homebrew on Linux, CPU build)\n"
-    "    https://github.com/ggml-org/llama.cpp/releases          (prebuilt binaries, incl. CUDA/Vulkan)\n"
+    "    https://github.com/ggml-org/llama.cpp/releases"
+    "          (prebuilt binaries, incl. CUDA/Vulkan)\n"
     "    https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md   (build for your GPU)"
 )
 _TOOL_TIMEOUT = 10
@@ -81,15 +82,19 @@ def run_checks(
     if mac or env.system == "Linux":
         checks.append(Check("platform", "ok", f"{env.system} {env.machine}"))
     else:
-        checks.append(Check("platform", "warn", f"{env.system}: untested; continue at your own risk"))
+        checks.append(
+            Check("platform", "warn", f"{env.system}: untested; continue at your own risk")
+        )
 
     # brew
     brew = env.which("brew")
     if brew:
         checks.append(Check("brew", "ok", brew))
     elif mac:
-        checks.append(Check("brew", "fail", "Homebrew not found; llama.cpp comes from Homebrew on macOS",
-                            fix=f"Install it: {BREW_INSTALL}"))
+        checks.append(Check(
+            "brew", "fail", "Homebrew not found; llama.cpp comes from Homebrew on macOS",
+            fix=f"Install it: {BREW_INSTALL}",
+        ))
     else:
         checks.append(Check("brew", "warn", "Homebrew not found (optional on Linux)"))
 
@@ -107,15 +112,20 @@ def run_checks(
         else:
             checks.append(Check(
                 "router support", "fail",
-                "this llama-server has no --models-preset; router presets need a build from December 2025 or later",
+                "this llama-server has no --models-preset; router presets need a build "
+                "from December 2025 or later",
                 fix="brew upgrade llama.cpp" if brew else LINUX_LLAMA_HELP,
             ))
     elif brew:
-        checks.append(Check("llama-server", "fail", "not found", fix="brew install llama.cpp",
-                            fix_cmd=[brew, "install", "llama.cpp"]))
+        checks.append(Check(
+            "llama-server", "fail", "not found", fix="brew install llama.cpp",
+            fix_cmd=[brew, "install", "llama.cpp"],
+        ))
     else:
-        checks.append(Check("llama-server", "fail", "not found",
-                            fix=f"Install Homebrew first: {BREW_INSTALL}" if mac else LINUX_LLAMA_HELP))
+        checks.append(Check(
+            "llama-server", "fail", "not found",
+            fix=f"Install Homebrew first: {BREW_INSTALL}" if mac else LINUX_LLAMA_HELP,
+        ))
 
     # hf command
     hf_cli = env.which("hf")
@@ -123,26 +133,38 @@ def run_checks(
     if hf_cli:
         checks.append(Check("hf", "ok", hf_cli))
     elif brew:
-        checks.append(Check("hf", "warn", "hf command not found (optional; downloads work without it)",
-                            fix="brew install hf", fix_cmd=[brew, "install", "hf"]))
+        checks.append(Check(
+            "hf", "warn", "hf command not found (optional; downloads work without it)",
+            fix="brew install hf", fix_cmd=[brew, "install", "hf"],
+        ))
     elif uv:
-        checks.append(Check("hf", "warn", "hf command not found (optional; downloads work without it)",
-                            fix='uv tool install "huggingface_hub[cli]"',
-                            fix_cmd=[uv, "tool", "install", "huggingface_hub[cli]"]))
+        checks.append(Check(
+            "hf", "warn", "hf command not found (optional; downloads work without it)",
+            fix='uv tool install "huggingface_hub[cli]"',
+            fix_cmd=[uv, "tool", "install", "huggingface_hub[cli]"],
+        ))
     else:
-        checks.append(Check("hf", "warn", "hf command not found (optional; downloads work without it)",
-                            fix='pipx install "huggingface_hub[cli]"'))
+        checks.append(Check(
+            "hf", "warn", "hf command not found (optional; downloads work without it)",
+            fix='pipx install "huggingface_hub[cli]"',
+        ))
 
     # token
     token = env.token_status()
     if token.state == "valid":
         checks.append(Check("hf token", "ok", f"logged in as {token.username}"))
     elif token.state == "invalid":
-        checks.append(Check("hf token", "warn", "token present but invalid", fix="hf auth login --force"))
+        checks.append(
+            Check("hf token", "warn", "token present but invalid", fix="hf auth login --force")
+        )
     elif token.state == "absent":
-        checks.append(Check("hf token", "warn", "no token; gated repos will be unavailable", fix="hf auth login"))
+        checks.append(Check(
+            "hf token", "warn", "no token; gated repos will be unavailable", fix="hf auth login"
+        ))
     else:
-        checks.append(Check("hf token", "warn", "could not reach huggingface.co to validate the token"))
+        checks.append(Check(
+            "hf token", "warn", "could not reach huggingface.co to validate the token"
+        ))
 
     # config dir
     try:
@@ -169,11 +191,15 @@ def run_checks(
                 checks.append(Check("models.ini", "fail", "missing files - " + "; ".join(problems),
                                     fix="local-llm edit  (fix the paths) or local-llm pull <repo>"))
             else:
-                checks.append(Check("models.ini", "ok", f"{len(preset.sections())} model(s), all files present"))
+                checks.append(Check(
+                    "models.ini", "ok", f"{len(preset.sections())} model(s), all files present"
+                ))
         except PresetError as error:
             checks.append(Check("models.ini", "fail", str(error)))
     else:
-        checks.append(Check("models.ini", "warn", f"not created yet ({paths.preset})", fix="local-llm setup"))
+        checks.append(Check(
+            "models.ini", "warn", f"not created yet ({paths.preset})", fix="local-llm setup"
+        ))
 
     # state dirs
     try:
@@ -186,10 +212,14 @@ def run_checks(
     if not env.port_in_use(settings.host, settings.port):
         checks.append(Check("port", "ok", f"{settings.port} is free"))
     elif router_pid is not None:
-        checks.append(Check("port", "ok", f"{settings.port} is held by our router (pid {router_pid})"))
+        checks.append(Check(
+            "port", "ok", f"{settings.port} is held by our router (pid {router_pid})"
+        ))
     else:
-        checks.append(Check("port", "fail", f"{settings.port} is in use by another process",
-                            fix="pick another port: local-llm --port N <command>, or port = N in settings.toml"))
+        checks.append(Check(
+            "port", "fail", f"{settings.port} is in use by another process",
+            fix="pick another port: local-llm --port N <command>, or port = N in settings.toml",
+        ))
 
     # agents
     present = [name for name in ("claude", "copilot", "opencode") if env.which(name)]
