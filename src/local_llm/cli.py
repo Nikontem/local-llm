@@ -403,7 +403,7 @@ def load(
         if name not in preset.sections():
             fail(f"Unknown model: {name}\n  local-llm models    to see what is available")
     limit = st.settings.max_models
-    if len(models) > limit:
+    if limit and len(models) > limit:
         fail(
             f"Asked for {len(models)} models but the router holds at most {limit}.\n"
             "The first would be evicted as the last loaded. Raise it with:\n"
@@ -454,7 +454,7 @@ def unload(model: str = typer.Argument(..., autocompletion=complete_model)) -> N
     st = state()
     router = st.router()
     if router.pid() is None:
-        fail("Router is not running.")
+        fail("Router is not running. Start it first: local-llm up")
     try:
         reply = router.unload_model(model)
     except RouterError as error:
