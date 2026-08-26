@@ -61,7 +61,11 @@ class FakeBackend:
         return ProcInfo(proc.pid, proc.cmdline, proc.rss) if proc and proc.alive else None
 
     def children(self, pid: int) -> list[ProcInfo]:
-        return [ProcInfo(p.pid, p.cmdline, p.rss) for p in self.procs.values() if p.alive and p.parent == pid]
+        return [
+            ProcInfo(p.pid, p.cmdline, p.rss)
+            for p in self.procs.values()
+            if p.alive and p.parent == pid
+        ]
 
     def listening(self, pid: int, port: int) -> bool:
         proc = self.procs.get(pid)

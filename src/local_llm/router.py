@@ -63,7 +63,8 @@ class PsutilBackend:
             try:
                 cmdline = proc.info["cmdline"] or []
                 name = proc.info["name"] or ""
-                if name_fragment in name or (cmdline and name_fragment in os.path.basename(cmdline[0])):
+                basename = os.path.basename(cmdline[0]) if cmdline else ""
+                if name_fragment in name or name_fragment in basename:
                     found.append(ProcInfo(proc.pid, list(cmdline)))
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
@@ -219,7 +220,9 @@ class Router:
 
     def check_preconditions(self) -> None:
         if not self.binary:
-            raise RouterError("llama-server not found in PATH.\nInstall it with: brew install llama.cpp")
+            raise RouterError(
+                "llama-server not found in PATH.\nInstall it with: brew install llama.cpp"
+            )
         if not self.paths.preset.is_file():
             raise RouterError(
                 f"Missing model config: {self.paths.preset}\n"
@@ -237,7 +240,9 @@ class Router:
 
     def _is_our_router(self, pid: int) -> bool:
         info = self.backend.info(pid)
-        return info is not None and is_llama_server(info.cmdline) and self.backend.listening(pid, self.settings.port)
+        if info is None or not is_llama_server(info.cmdline):
+            return False
+        return self.backend.listening(pid, self.settings.port)
 
     def pid(self) -> int | None:
         pid_file = self.paths.pid_file
@@ -397,5 +402,9 @@ class Router:
         return self.http(
             "POST",
             "/v1/chat/completions",
-            {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens},
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+            },
         )
