@@ -34,7 +34,7 @@ otherwise, installing `uv` itself if needed. Force one path with a flag:
 ```
 sh install.sh --brew        # brew tap nikontem/tap && brew install local-llm
 sh install.sh --uv          # uv tool install git+https://github.com/Nikontem/local-llm
-sh install.sh --uv -y       # same, without the Homebrew/uv prompt
+sh install.sh -y             # no --brew/--uv: skips the Homebrew/uv prompt (Homebrew wins if present)
 sh install.sh --upgrade     # reinstall the latest version
 ```
 
@@ -204,7 +204,8 @@ only when you know two configured models together fit the budget.
   [--set KEY=VALUE]... [--no-tuning] [-y]`** — downloads a model and writes a
   tuned `models.ini` section for it. With no quantization named, it shows
   every one available with size and fit and asks; `-y` accepts the
-  suggestion. Real output from a 0.5 GB pull:
+  suggestion. Output from a 0.5 GB pull (from the milestone-2 acceptance
+  run, paths shortened):
 
   ```
   Qwen/Qwen2.5-0.5B-Instruct-GGUF  Q8_0
@@ -214,7 +215,8 @@ only when you know two configured models together fit the budget.
     section name:    Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q8_0
 
   Added [Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q8_0] to /Users/you/.config/local-llm/models.ini
-    sampling: profile "qwen2.5-small"
+    context: 32768 suggested for this machine (38.0 GB usable)
+    sampling: profile qwen2.5-small
   ```
 
   The section name (`org/repo:TAG`) is not cosmetic: it is exactly the id
@@ -321,10 +323,12 @@ Every key also has an environment variable, which wins over the file:
   still works. Offline with a cold cache names that file in the error. A
   proxy or firewall blocking `huggingface.co` produces the same symptom as
   being offline.
-- **Port in use** — `local-llm doctor` names the process holding the port;
-  `local-llm status` shows what our own router thinks is running. Pick
-  another port with `--port` on the relevant command or `port = N` in
-  `settings.toml`.
+- **Port in use** — `local-llm doctor` reports the port taken, and names
+  our own router's pid when it is ours; if it is not, find the other
+  process with `lsof -i :5678` (swap in your port). `local-llm status`
+  shows what our own router thinks is running. Pick another port with
+  `local-llm --port N <command>` (the flag goes before the subcommand) or
+  `port = N` in `settings.toml`.
 - **Gated repo** — a repository whose weights need accepting the publisher's
   terms shows `gated` in `search`/`recommend`. Accept the terms on the
   repository's Hugging Face page, then `hf auth login`.
