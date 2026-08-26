@@ -3062,9 +3062,9 @@ def test_up_max_models_flag_and_default(harness):
     h = harness
     h.backend.spawn_listening = {5678}
     h.run("up")
-    assert h.backend.spawned[0][0][-5:-1] == ["--models-max", "1", "--models-autoload", "--no-ui"][:4] or "1" in h.backend.spawned[0][0]
+    args, _ = h.backend.spawned[0]
+    assert args[args.index("--models-max") + 1] == "1"
     h.run("down")
-    h.backend.procs.clear()
     h.run("up", "--max-models", "2")
     args, _ = h.backend.spawned[1]
     assert args[args.index("--models-max") + 1] == "2"
