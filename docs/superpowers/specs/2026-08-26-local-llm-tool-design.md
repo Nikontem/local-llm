@@ -567,13 +567,13 @@ Rules:
   counts — a deliberate overestimate for sliding-window layers, so those
   models get a smaller suggestion. The suggestion is the largest power of two,
   at least 4096 and at most `min(context_length, 262144)`, such that
-  `W + kv(c) ≤ budget` **and** `kv(c) ≤ (budget − W) / 2` — the cache may take
-  at most half of what the weights leave free, so compute buffers and a
-  second model still have room. On the author's 48 GB Mac (38 GB budget) this
-  suggests 131072 for Qwen3.8-27B and Qwen3-Coder-30B-A3B, 262144 for
-  Qwen3.6-35B-A3B, and 32768 for Qwen2.5-1.5B; the 65536 the author uses for
-  the first two is a speed preference, kept by `--context 65536` or
-  `local-llm edit`. When the header cannot be read, fall back to
+  `W + kv(c) ≤ budget` **and** `kv(c) ≤ (budget − W) / 3` — the cache may take
+  at most a third of what the weights leave free, so compute buffers and a
+  second model still have room. On the author's 48 GB Mac (38 GiB budget)
+  this suggests 131072 for Qwen3.8-27B, 65536 for Qwen3-Coder-30B-A3B, 262144
+  for Qwen3.6-35B-A3B, and 32768 for Qwen2.5-1.5B — three of the four values
+  in use today; the author's 65536 for Qwen3.8 is a speed preference, kept by
+  `--context 65536` or `local-llm edit`. When the header cannot be read, fall back to
   `min(context_length, 65536)`.
 - `n-predict`: `32768` when `c ≥ 65536`, else `4096`.
 - `cache-type-k` and `cache-type-v` = `q8_0` when the file total is 10 GB or
