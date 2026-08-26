@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import threading
@@ -61,6 +62,12 @@ def token_status(timeout: float = 10.0) -> TokenStatus:
 
 
 STALL_SECONDS = 180.0  # a download that has not grown for this long is reported, not waited on
+
+# Downloads go over plain HTTP unless the person opts back into Hugging Face's xet
+# backend. On the author's network, three of three xet transfers stalled a few
+# megabytes short of the end while plain HTTP finished at full speed; the plain
+# path is also what curl does, so it is the one whose behaviour people can check.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 LIST_EXPAND = [
     "author", "downloads", "likes", "trendingScore", "pipeline_tag", "gated", "tags",
     "baseModels", "gguf",

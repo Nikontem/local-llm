@@ -332,7 +332,9 @@ Every key also has an environment variable, which wins over the file:
 - **A download stalls** — Hugging Face throttles unauthenticated downloads,
   and a CDN node can stall. `pull` gives up after three minutes without new
   data and says so; the partial file is kept, so running the same command
-  again resumes. Logging in (`hf auth login`) lifts the limit.
+  again resumes. Logging in (`hf auth login`) lifts the limit. Downloads use
+  plain HTTP by default; set `HF_HUB_DISABLE_XET=0` before running to use
+  Hugging Face's xet backend instead.
 - **Gated repo** — a repository whose weights need accepting the publisher's
   terms shows `gated` in `search`/`recommend`. Accept the terms on the
   repository's Hugging Face page, then `hf auth login`.

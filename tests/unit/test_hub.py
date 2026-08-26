@@ -233,3 +233,11 @@ def test_download_keeps_waiting_while_the_file_grows(tmp_path, monkeypatch):
     monkeypatch.setattr(hub, "cache_dir", lambda: tmp_path)
     result = hub.download("unsloth/Qwen3.8-27B-GGUF", ["a.gguf"], stall_seconds=0.8)
     assert result == [tmp_path / "done.gguf"]
+
+
+def test_plain_http_downloads_are_the_default():
+    import os
+
+    import local_llm.hub  # noqa: F401 - importing sets the default
+
+    assert os.environ.get("HF_HUB_DISABLE_XET") == "1"
