@@ -352,12 +352,13 @@ def models_cmd() -> None:
         fail(f"No models defined in {st.paths.preset}")
     out.print(f"Models in {st.paths.preset}")
     out.print()
+    width = max(len(name) for name in names)
     for name in names:
         try:
             size = human_gb(sum(preset.file_sizes(name)))
         except PresetError as error:
             size = f"(missing: {str(error).split(': ')[-1]})"
-        out.print(f"  {name:<44} {size}")
+        out.print(f"  {name:<{width}}  {size}")
     out.print()
     out.print('Pass one as the "model" field of any OpenAI request - no restart needed.')
     out.print("  local-llm load <model>    load it now instead of on first use")
