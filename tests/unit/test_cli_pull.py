@@ -127,3 +127,12 @@ def test_load_uses_the_kv_cache_when_the_header_is_readable(harness):
     result = h.run("load", "big")
     assert result.exit_code == 0, result.output
     assert "weights + KV cache at c=65536" in result.output
+
+
+def test_remove_while_running_does_not_suggest_loading_it(hubbed):
+    h = hubbed
+    assert h.run("pull", f"{REPO}:Q8_0", "--yes").exit_code == 0
+    h.backend.add(42, ["/opt/bin/llama-server"], listening={5678})
+    result = h.run("remove", f"{REPO}:Q8_0", "--yes")
+    assert result.exit_code == 0, result.output
+    assert "reloaded its model list" in result.output and "local-llm load" not in result.output

@@ -228,6 +228,9 @@ class Preset:
         if lead > 0 and lead < len(self._lines):
             if self._lines[lead - 1].kind == "blank" and self._lines[lead].kind == "blank":
                 del self._lines[lead]
+        # The separator that introduced a final section would otherwise trail the file.
+        if lead >= len(self._lines) and self._lines and self._lines[-1].kind == "blank":
+            self._lines.pop()
 
     # ------------------------------------------------------------ save
 

@@ -843,19 +843,21 @@ def _parse_sets(values: list[str]) -> list[tuple[str, str]]:
     return pairs
 
 
-def _after_preset_change(st: State, section: str) -> None:
+def _after_preset_change(st: State, section: str, *, added: bool = True) -> None:
     router = st.router()
     if router.pid() is None:
-        out.print("  local-llm up    to start serving it")
+        if added:
+            out.print("  local-llm up    to start serving it")
         return
     try:
         router.list_models(reload=True)
-        out.print("  available now: the router reloaded its model list")
-        out.print(
-            f"  local-llm load {shlex.quote(section)}    to load it ahead of the first request"
-        )
+        out.print("  the running router reloaded its model list")
+        if added:
+            out.print(
+                f"  local-llm load {shlex.quote(section)}    to load it ahead of the first request"
+            )
     except RouterError:
-        out.print("  local-llm restart    so the running router sees it")
+        out.print("  local-llm restart    so the running router sees the change")
 
 
 def _pull(
@@ -1049,4 +1051,4 @@ def remove(
             except OSError as error:
                 err.print(f"  could not delete {file}: {error}")
     out.print("Removed.")
-    _after_preset_change(st, model)
+    _after_preset_change(st, model, added=False)

@@ -92,3 +92,10 @@ def test_dump_preserves_missing_trailing_newline():
 def test_dump_preserves_crlf_line_endings():
     text = "[a]\r\nmodel = /m/a.gguf\r\n"
     assert Preset.parse(text).dump() == text
+
+
+def test_add_then_remove_last_section_restores_the_file():
+    p = Preset.parse(BASE)
+    p.add_section("b", [("model", "/m/b.gguf")], comments=["added by local-llm"])
+    p.remove_section("b")
+    assert p.dump() == BASE
