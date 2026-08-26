@@ -126,3 +126,80 @@ class Preset:
                 raise PresetError(f"Section [{section}]: {key} file is missing: {path}")
             sizes.append(path.stat().st_size)
         return sizes
+
+    # ------------------------------------------------------------ editing
+
+    def _span(self, name: str) -> tuple[int, int]:
+        """Index of the header line and the index just past the section."""
+        start = next(
+            (i for i, line in enumerate(self._lines) if line.kind == "header" and line.section == name),
+            None,
+        )
+        if start is None:
+            raise PresetError(f"No section [{name}] in the preset")
+        end = next(
+            (i for i in range(start + 1, len(self._lines)) if self._lines[i].kind == "header"),
+            len(self._lines),
+        )
+        return start, end
+
+    def _leading_comment_start(self, header_index: int) -> int:
+        i = header_index
+        while i > 0 and self._lines[i - 1].kind == "comment":
+            i -= 1
+        return i
+
+    @staticmethod
+    def _section_lines(
+        name: str, keys: Sequence[tuple[str, str]], comments: Sequence[str]
+    ) -> list[_Line]:
+        lines = [_Line(f"# {c}", "comment", name) for c in comments]
+        lines.append(_Line(f"[{name}]", "header", name))
+        lines.extend(_Line(f"{k} = {v}", "kv", name, k, v) for k, v in keys)
+        return lines
+
+    def add_section(
+        self, name: str, keys: Sequence[tuple[str, str]], comments: Sequence[str] = ()
+    ) -> None:
+        if not name.strip() or "]" in name or "\n" in name:
+            raise PresetError(f"Invalid section name: {name!r}")
+        if self.has_section(name):
+            raise PresetError(f"Section [{name}] already exists in the preset")
+        if self._lines and self._lines[-1].kind != "blank":
+            self._lines.append(_Line("", "blank", self._lines[-1].section))
+        self._lines.extend(self._section_lines(name, keys, comments))
+
+    def replace_section(
+        self, name: str, keys: Sequence[tuple[str, str]], comments: Sequence[str] = ()
+    ) -> None:
+        start, end = self._span(name)
+        # Trailing blank lines belong to the layout, not to the section.
+        body_end = end
+        while body_end > start + 1 and self._lines[body_end - 1].kind == "blank":
+            body_end -= 1
+        lead = self._leading_comment_start(start)
+        self._lines[lead:body_end] = self._section_lines(name, keys, comments)
+
+    def remove_section(self, name: str) -> None:
+        start, end = self._span(name)
+        lead = self._leading_comment_start(start)
+        del self._lines[lead:end]
+        # Two blank lines now touching each other read as a hole; keep one.
+        if lead > 0 and lead < len(self._lines):
+            if self._lines[lead - 1].kind == "blank" and self._lines[lead].kind == "blank":
+                del self._lines[lead]
+
+    # ------------------------------------------------------------ save
+
+    def save(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            shutil.copy2(path, path.with_name(path.name + ".bak"))
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as handle:
+                handle.write(self.dump())
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
