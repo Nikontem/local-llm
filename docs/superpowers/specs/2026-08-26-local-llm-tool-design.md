@@ -555,16 +555,26 @@ Rules:
   lower-cased. Must be unique; a clash (two files in one repo sharing a TAG,
   such as `UD-Q4_K_XL` and `Q4_K_XL`) is an error naming the existing section
   and suggesting `--name`.
-- `c`: `--context`, else computed for this machine from the GGUF header:
-  the largest power of two, at least 4096 and at most the model's own
-  `context_length`, such that `weights × 1.15 + 1 GiB + kv(c)` fits the
-  budget (7.7). `kv(c) = attention_layers × 2 × kv_heads × head_size ×
-  bytes_per_element × c`, with `bytes_per_element` 1.0625 for `q8_0` and 2
-  for `f16`; `attention_layers` is `block_count / full_attention_interval`
-  when the header has that key (hybrid architectures such as `qwen35`), else
-  `block_count`. On the author's Mac this yields 65536 for Qwen3.8-27B and
-  262144 for Qwen3.6-35B-A3B — the values in use today. When the header
-  cannot be read, fall back to `min(context_length, 65536)`.
+- `c`: `--context`, else computed for this machine from the GGUF header.
+  Let `W = weights × 1.15 + 1 GiB` (7.7) and `kv(c) = attention_layers ×
+  (key_length + value_length) × kv_heads × bytes_per_element × c`, with
+  `bytes_per_element` 1.0625 for `q8_0` and 2 for `f16`. `attention_layers`
+  is `block_count // full_attention_interval` when the header has that key
+  (hybrid architectures such as `qwen35`, where the other layers keep a small
+  fixed-size state), else `block_count`; `key_length`/`value_length` default
+  to `embedding_length / head_count` when absent; when `head_count_kv` is a
+  per-layer array (Gemma 4), its maximum is used and every non-zero layer
+  counts — a deliberate overestimate for sliding-window layers, so those
+  models get a smaller suggestion. The suggestion is the largest power of two,
+  at least 4096 and at most `min(context_length, 262144)`, such that
+  `W + kv(c) ≤ budget` **and** `kv(c) ≤ (budget − W) / 2` — the cache may take
+  at most half of what the weights leave free, so compute buffers and a
+  second model still have room. On the author's 48 GB Mac (38 GB budget) this
+  suggests 131072 for Qwen3.8-27B and Qwen3-Coder-30B-A3B, 262144 for
+  Qwen3.6-35B-A3B, and 32768 for Qwen2.5-1.5B; the 65536 the author uses for
+  the first two is a speed preference, kept by `--context 65536` or
+  `local-llm edit`. When the header cannot be read, fall back to
+  `min(context_length, 65536)`.
 - `n-predict`: `32768` when `c ≥ 65536`, else `4096`.
 - `cache-type-k` and `cache-type-v` = `q8_0` when the file total is 10 GB or
   more (the KV cache — the memory that grows with context — stored at 8-bit).
