@@ -53,3 +53,39 @@ def harness(tmp_path, monkeypatch):
 
     return SimpleNamespace(paths=paths, backend=backend, http=http, run=run, tmp=tmp_path,
                            messages=messages, opened=opened, monkeypatch=monkeypatch)
+
+
+@pytest.fixture
+def hubbed(harness, tmp_path):
+    """The harness plus a fake Hugging Face Hub, a fixed Mac, and downloads into tmp."""
+    from local_llm import cli
+    from local_llm.estimate import GIB
+    from local_llm.hardware import Machine
+    from local_llm.hub import Hub
+
+    from .fakes import FakeApi
+    from .test_discover import MODELS
+    from .test_gguf import QWEN38, SMALL, write_gguf
+
+    served = {}
+
+    def download_fn(repo_id, filename, **kwargs):
+        target = tmp_path / "hfcache" / repo_id.replace("/", "--") / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if filename.endswith(".gguf"):
+            write_gguf(target, SMALL if "1.5b" in filename.lower() else QWEN38)
+        else:
+            target.write_text(served.get((repo_id, filename), ""))
+        return str(target)
+
+    api = FakeApi(MODELS, {"unsloth/Qwen3.8-27B-GGUF": {"README.md"}})
+    hub = Hub(api=api, cache=None, download_fn=download_fn, cached_path_fn=lambda repo, name: None)
+    machine = Machine("Darwin", "arm64", "Apple M4 Pro", 48 * GIB, "apple", 48 * GIB, 20, 10)
+    harness.monkeypatch.setattr(cli, "_make_hub", lambda st, refresh=False: hub)
+    harness.monkeypatch.setattr(cli, "_machine", lambda st: machine)
+    harness.monkeypatch.setattr(cli, "free_disk_bytes", lambda path: 1000 * GIB)
+    harness.monkeypatch.setattr(cli, "hf_cache_dir", lambda: tmp_path / "hfcache")
+    harness.hub = hub
+    harness.served = served
+    harness.machine = machine
+    return harness

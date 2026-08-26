@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -17,13 +18,20 @@ from rich.console import Console
 
 from . import __version__
 from .agents import AgentError, claude_env, copilot_env, exec_with_env, export_lines, resolve_model
+from .discover import GROUPS, Candidate, gather
+from .discover import search as discover_search
 from .doctor import run_checks
 from .estimate import budget_bytes, estimate_bytes, human_gb
-from .hardware import total_ram
+from .gguf import GgufError, read_header, refined_estimate
+from .hardware import Machine, detect, total_ram
+from .hub import Hub, HubCache, HubError, free_disk_bytes, hf_cache_dir
 from .logs import current_log, prune_logs, tail_lines
 from .paths import Paths
 from .preset import Preset, PresetError
+from .quant import QuantError, QuantOption, find_option, quant_options, suggest
 from .router import Router, RouterError
+from .sampling import values_for
+from .sections import build_section, local_name, section_name
 from .settings import load_settings
 
 app = typer.Typer(
@@ -554,3 +562,216 @@ def doctor(
                 if typer.confirm(f"Run: {' '.join(check.fix_cmd)} ?", default=True):
                     subprocess.call(check.fix_cmd)
     raise typer.Exit(1 if failed else 0)
+
+
+# ---------------------------------------------------------------- discovery
+
+
+def _make_hub(st: State, refresh: bool = False) -> Hub:
+    cache = HubCache(st.paths.hub_cache_file)
+    if refresh:
+        cache.clear()
+    return Hub(cache=cache)
+
+
+def _machine(st: State) -> Machine:
+    return detect(st.settings.reserve_gb)
+
+
+def _preset_or_none(st: State) -> Preset | None:
+    try:
+        return Preset.load(st.paths.preset)
+    except PresetError:
+        return None
+
+
+def _marks(candidate: Candidate) -> str:
+    marks = []
+    if candidate.thinking:
+        marks.append("thinking")
+    if candidate.vision:
+        marks.append("vision")
+    if candidate.gated:
+        marks.append("gated")
+    return f" ({', '.join(marks)})" if marks else ""
+
+
+def _state_note(candidate: Candidate) -> str:
+    notes = []
+    if candidate.configured:
+        notes.append("in models.ini")
+    elif candidate.downloaded:
+        notes.append("downloaded")
+    return f"  · {', '.join(notes)}" if notes else ""
+
+
+def _candidate_line(candidate: Candidate, machine: Machine) -> str:
+    option = candidate.suggested
+    if option is None:
+        return f"{candidate.display_name}{_marks(candidate)}  {candidate.repo_id}  (no files listed)"
+    return (
+        f"{candidate.display_name}{_marks(candidate)}  {candidate.repo_id}  {option.label}"
+        f"  {human_gb(option.total)} on disk, ~{human_gb(candidate.estimate)} in memory"
+        f"  {machine.fit_label(candidate.estimate)}  {candidate.lineage}{_state_note(candidate)}"
+    )
+
+
+def _candidate_json(candidate: Candidate) -> dict:
+    return {
+        "repo_id": candidate.repo_id,
+        "base_model": candidate.base_model,
+        "display_name": candidate.display_name,
+        "lineage": candidate.lineage,
+        "downloads": candidate.downloads,
+        "likes": candidate.likes,
+        "params": candidate.params,
+        "groups": candidate.groups,
+        "thinking": candidate.thinking,
+        "vision": candidate.vision,
+        "gated": candidate.gated,
+        "suggested": candidate.suggested.label if candidate.suggested else None,
+        "fit": candidate.fit,
+        "estimate": candidate.estimate,
+        "downloaded": candidate.downloaded,
+        "configured": candidate.configured,
+        "also_from": candidate.also_from,
+        "options": [
+            {"label": o.label, "tag": o.tag, "files": o.files, "size": o.size, "mmproj": o.mmproj,
+             "total": o.total, "estimate": estimate_bytes([o.total])}
+            for o in candidate.options
+        ],
+    }
+
+
+def _choose_option(
+    options: list[QuantOption], suggested: QuantOption | None, machine: Machine, *, yes: bool
+) -> QuantOption:
+    if suggested is None:
+        fail("No quantization to choose from.")
+    if yes:
+        return suggested
+    ordered = [suggested] + [o for o in options if o is not suggested]
+    out.print("  quantizations available (suggested first):")
+    for index, option in enumerate(ordered, start=1):
+        estimate = estimate_bytes([option.total])
+        marker = "  <- suggested for this machine" if option is suggested else ""
+        out.print(
+            f"  {index:>2}. {option.label:<12} {human_gb(option.total):>9} on disk"
+            f"  ~{human_gb(estimate):>9}  {machine.fit_label(estimate)}{marker}"
+        )
+    choice = typer.prompt("Quantization", default="1")
+    try:
+        option = ordered[int(choice) - 1]
+    except (ValueError, IndexError):
+        fail(f"Pick a number between 1 and {len(ordered)}")
+    estimate = estimate_bytes([option.total])
+    if machine.fit(estimate) == "too_big":
+        short = human_gb(estimate - machine.budget)
+        if not typer.confirm(
+            f"{option.label} needs about {human_gb(estimate)}, {short} more than the"
+            f" {human_gb(machine.budget)} usable here. Continue anyway?",
+            default=False,
+        ):
+            raise typer.Exit(1)
+    return option
+
+
+@app.command()
+def recommend(
+    use: str | None = typer.Option(None, "--use", help="coding, general, small or vision."),
+    include_finetunes: bool = typer.Option(
+        False, "--include-finetunes", help="Also show community fine-tunes and merges."
+    ),
+    limit: int = typer.Option(3, "--limit", help="Models per use case."),
+    refresh: bool = typer.Option(False, "--refresh", help="Ignore the 24-hour cache."),
+    pick: bool = typer.Option(False, "--pick", help="Choose one interactively and download it."),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable output."),
+) -> None:
+    """Models that suit this machine, computed from live Hugging Face data."""
+    st = state()
+    if use is not None and use not in GROUPS:
+        fail(f"--use must be one of: {', '.join(GROUPS)}")
+    machine = _machine(st)
+    hub = _make_hub(st, refresh)
+    preset = _preset_or_none(st)
+
+    def progress(repo: str) -> None:
+        if not json_out and err.is_terminal:
+            err.print(f"  looking at {repo}", end="\r")
+
+    try:
+        groups = gather(
+            hub, machine, preset, include_finetunes=include_finetunes,
+            limit_per_group=limit, on_progress=progress,
+        )
+    except HubError as error:
+        fail(str(error))
+    wanted = [use] if use else list(GROUPS)
+    if json_out:
+        out.print(json.dumps({g: [_candidate_json(c) for c in groups[g]] for g in wanted}, indent=2))
+        return
+    out.print(machine.describe())
+    out.print()
+    numbered: list[Candidate] = []
+    for group in wanted:
+        out.print(group)
+        if not groups[group]:
+            out.print("  nothing found that fits")
+        for candidate in groups[group]:
+            numbered.append(candidate)
+            out.print(f"  {len(numbered):>2}. {_candidate_line(candidate, machine)}")
+        out.print()
+    if not pick:
+        out.print("  local-llm recommend --pick         choose one and download it")
+        out.print("  local-llm pull <repo>[:QUANT]      or name it yourself")
+        return
+    if not numbered:
+        fail("Nothing to pick from.")
+    choice = typer.prompt("Number to download (q to quit)", default="q")
+    if choice.strip().lower() == "q":
+        raise typer.Exit()
+    try:
+        candidate = numbered[int(choice) - 1]
+    except (ValueError, IndexError):
+        fail(f"Pick a number between 1 and {len(numbered)}")
+    option = _choose_option(candidate.options, candidate.suggested, machine, yes=False)
+    _pull(st, hub, machine, candidate.repo_id, option, name=None, context=None, extra=[],
+          no_tuning=False, yes=True)
+
+
+@app.command()
+def search(
+    text: str = typer.Argument(..., help="Words to look for in repository names."),
+    limit: int = typer.Option(20, "--limit", help="How many repositories to show."),
+    author: str | None = typer.Option(None, "--author", help="Only this organization or user."),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable output."),
+) -> None:
+    """Search GGUF repositories on Hugging Face; shows what fits this machine."""
+    st = state()
+    machine = _machine(st)
+    hub = _make_hub(st)
+    try:
+        results = discover_search(hub, machine, _preset_or_none(st), text=text, limit=limit, author=author)
+    except HubError as error:
+        fail(str(error))
+    if json_out:
+        out.print(json.dumps([_candidate_json(c) for c in results], indent=2))
+        return
+    if not results:
+        out.print(f"No GGUF repositories match {text!r}.")
+        return
+    for candidate in results:
+        out.print(
+            f"{candidate.repo_id}  {candidate.downloads:,} downloads  {candidate.likes:,} likes"
+            f"  {candidate.lineage}{_marks(candidate)}{_state_note(candidate)}"
+        )
+        for option in candidate.options:
+            estimate = estimate_bytes([option.total])
+            out.print(f"    {option.label:<12} {human_gb(option.total):>9}  ~{human_gb(estimate):>9}  {machine.fit_label(estimate)}")
+        if candidate.suggested is not None:
+            out.print(f"    local-llm pull {candidate.repo_id}:{candidate.suggested.label}")
+        out.print()
+
+
+def _pull(*args, **kwargs):  # placeholder; replaced by Task 9
+    raise NotImplementedError
