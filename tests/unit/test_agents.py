@@ -3,12 +3,20 @@ from pathlib import Path
 import pytest
 
 from local_llm.agents import (
-    AgentError, claude_env, copilot_env, exec_with_env, export_lines, resolve_model,
+    AgentError,
+    claude_env,
+    copilot_env,
+    exec_with_env,
+    export_lines,
+    resolve_model,
 )
 from local_llm.preset import Preset
 from local_llm.settings import Settings
 
-PRESET = Preset.parse("[*]\nc = 8192\n[big]\nmodel = /b.gguf\nc = 65536\nn-predict = 32768\n[small]\nmodel = /s.gguf\n")
+PRESET = Preset.parse(
+    "[*]\nc = 8192\n[big]\nmodel = /b.gguf\nc = 65536\nn-predict = 32768\n"
+    "[small]\nmodel = /s.gguf\n"
+)
 
 
 def test_resolve_model_uses_default_and_validates():
@@ -60,13 +68,17 @@ def test_export_lines_for_shells():
     fish = export_lines("big", PRESET, Settings(), Path("/c/models.ini"), shell="fish")
     assert "set -gx ANTHROPIC_MODEL big\n" in fish
     quoted = export_lines("big", PRESET, Settings(api_key="a b"), Path("/c/x y.ini"))
-    assert "export OPENAI_API_KEY='a b'\n" in quoted and "export LOCAL_LLM_PRESET='/c/x y.ini'\n" in quoted
+    assert "export OPENAI_API_KEY='a b'\n" in quoted
+    assert "export LOCAL_LLM_PRESET='/c/x y.ini'\n" in quoted
 
 
 def test_exec_with_env_replaces_process(monkeypatch):
     calls = []
     monkeypatch.setattr("local_llm.agents.shutil.which", lambda name: f"/bin/{name}")
-    monkeypatch.setattr("local_llm.agents.os.execve", lambda path, argv, env: calls.append((path, argv, env)))
+    monkeypatch.setattr(
+        "local_llm.agents.os.execve",
+        lambda path, argv, env: calls.append((path, argv, env)),
+    )
     monkeypatch.setenv("KEEP", "1")
     exec_with_env("claude", ["--resume"], {"ANTHROPIC_MODEL": "big"})
     path, argv, env = calls[0]
