@@ -73,7 +73,7 @@ def test_pull_reloads_a_running_router(hubbed):
     result = h.run("pull", REPO, "--yes")
     assert result.exit_code == 0, result.output
     assert ("GET", "/models?reload=1", None) in h.http.calls
-    assert "available now" in result.output
+    assert "reloaded its model list" in result.output
 
 
 def test_add_local_file_and_remove_with_files(hubbed):
