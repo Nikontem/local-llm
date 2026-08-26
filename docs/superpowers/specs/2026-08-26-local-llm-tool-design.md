@@ -441,7 +441,7 @@ URL recording where the values came from. Version-1 profiles:
 | profile | keys | source |
 |---|---|---|
 | qwen3-thinking | temp 0.6, top-k 20, top-p 0.95, min-p 0, presence-penalty 0.0, repeat-penalty 1.0, reasoning-format deepseek | the author's Qwen3.6 section (unsloth model card) |
-| qwen3.8 | temp 1.0, top-k 20, top-p 0.95, min-p 0, presence-penalty 0.0, repeat-penalty 1.0, reasoning-format deepseek | the author's Qwen3.8 section (unsloth model card) |
+| qwen3.8 | temp 1.0, top-k 20, top-p 0.95, min-p 0, presence-penalty 0.0, repeat-penalty 1.0, reasoning-format deepseek, reasoning-effort medium | the author's Qwen3.8 section (unsloth model card). `reasoning-effort` is set because the GGUF chat template defaults it to `xhigh` when a client does not send it, and llama.cpp's web UI never does |
 | qwen3-instruct | temp 0.7, top-k 20, top-p 0.8, min-p 0, repeat-penalty 1.05 | the author's Qwen3-Coder section |
 | qwen2.5-small | temp 0.7, top-k 20, top-p 0.8, min-p 0, repeat-penalty 1.1 | the author's Qwen2.5 section |
 | gemma | temp 1.0, top-k 64, top-p 0.95, min-p 0, repeat-penalty 1.0 | the author's Gemma section |
@@ -474,12 +474,13 @@ and the section comment says so.
 ```ini
 # added by local-llm 2026-08-26 from unsloth/Qwen3.8-27B-GGUF (UD-Q4_K_XL, 16.1 GB)
 # sampling: profile "qwen3.8" — https://huggingface.co/unsloth/Qwen3.8-27B-GGUF
-[qwen3.8-27b-ud-q4_k_xl]
+[unsloth/Qwen3.8-27B-GGUF:Q4_K_XL]
 model = /Users/you/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/<sha>/Qwen3.8-27B-UD-Q4_K_XL.gguf
 mmproj = /Users/you/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/<sha>/mmproj-F16.gguf
 c = 65536
 n-predict = 32768
 reasoning-format = deepseek
+reasoning-effort = medium
 temp = 1.0
 top-k = 20
 top-p = 0.95
@@ -492,10 +493,22 @@ cache-type-v = q8_0
 
 Rules:
 
-- Section name: `--name`, else the catalog `id` plus the quantization token,
-  else the file stem — in both derived cases lower-cased, for example
-  `qwen3.8-27b-ud-q4_k_xl`. Must be unique; a clash is an error naming the
-  existing section.
+- Section name: `--name`, else the id llama-server itself gives the file.
+  llama-server scans the Hugging Face cache on its own and lists every GGUF
+  there as `org/repo:TAG`, next to the preset sections. TAG is derived from
+  the file name exactly as llama.cpp's `get_gguf_split_info` does: strip
+  `.gguf` and any `-NNNNN-of-NNNNN` shard suffix, take the last token after a
+  `-` or `.`, upper-case it — so `Qwen3.8-27B-UD-Q4_K_XL.gguf` in
+  `unsloth/Qwen3.8-27B-GGUF` is `unsloth/Qwen3.8-27B-GGUF:Q4_K_XL` and
+  `qwen2.5-1.5b-instruct-q4_k_m.gguf` is `Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M`.
+  Naming the section that way makes the preset entry *replace* the
+  auto-discovered one instead of sitting next to it: a duplicate picked in
+  the web UI would load with no `c` at all, which on a 30B model meant a
+  212k-token context and a frozen machine (observed on the author's Mac,
+  2026-08-26). For a file added from a plain path (`add`), the file stem
+  lower-cased. Must be unique; a clash (two files in one repo sharing a TAG,
+  such as `UD-Q4_K_XL` and `Q4_K_XL`) is an error naming the existing section
+  and suggesting `--name`.
 - `c`: `--context`, else the catalog `context`, else
   `min(gguf.context_length, 65536)` for models of 8B parameters or more and
   `min(gguf.context_length, 32768)` below that.
@@ -525,6 +538,16 @@ preserved byte for byte.
 - Section names may contain any character except `]` and newline.
 
 ## 11. Router runtime
+
+Two facts about `llama-server` 0.3.0 shape this section. It evicts loaded
+models only by count (`--models-max`, least recently used), never by memory
+pressure, and idle sleep is time-based; so two large models can both stay
+resident until Metal runs out of memory mid-request and every call fails with
+"Compute error". That is why `max_models` defaults to 1 and why the `load`
+budget check is described honestly as guarding explicit loads only — a
+request naming an unloaded model, or the web UI, bypasses it. Second, the
+router lists every GGUF it finds in the Hugging Face cache alongside the
+preset sections, which is why sections are named with the cache id (9.3).
 
 ### 11.1 Start
 
@@ -747,8 +770,8 @@ After `install.sh` has installed the tool: replace the `.zshrc` line that
 sources `local_llm.zsh` with the completion and aliases from
 `local-llm completion install`; rename `local_llm.zsh` to
 `local_llm.zsh.retired`; leave `models.ini` untouched (it is already valid);
-write `settings.toml` with `default_model = "qwen-3.8-q4"`, `max_models = 1`,
-`reserve_gb = 10`, `port = 5678`; run `integrate opencode` (the plugin file
+write `settings.toml` with `default_model = "unsloth/Qwen3.8-27B-GGUF:Q4_K_XL"`,
+`max_models = 1`, `reserve_gb = 10`, `port = 5678`; run `integrate opencode` (the plugin file
 becomes the one shipped by the tool). Backups and retired router files are
 left where they are.
 
