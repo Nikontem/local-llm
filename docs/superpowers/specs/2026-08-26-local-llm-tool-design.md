@@ -791,9 +791,9 @@ local-llm/
   pyproject.toml  uv.lock  README.md  LICENSE  CHANGELOG.md  install.sh
   src/local_llm/
     __init__.py cli.py paths.py settings.py preset.py hardware.py estimate.py
-    hub.py catalog.py sampling.py router.py logs.py agents.py doctor.py setup.py
+    hub.py discover.py gguf.py sampling.py router.py logs.py agents.py doctor.py setup.py
     integrations/opencode.py
-    catalog.json sampling.json
+    sampling.json
     resources/opencode-plugin.js resources/models.template.ini
   tests/unit/ tests/live/ tests/e2e/
   docs/superpowers/specs/ docs/superpowers/plans/
@@ -845,7 +845,7 @@ where it is. Copy, not move, because the file is still being written.
 1. **Runtime parity** — scaffold, `paths`, `settings`, `preset`, `logs`,
    `router`, `agents`, `doctor`; every existing command works on this Mac
    against the existing `models.ini`.
-2. **Models** — `hardware`, `estimate`, `hub`, `catalog`, `sampling`,
+2. **Models** — `hardware`, `estimate`, `hub`, `gguf`, `discover`, `sampling`,
    `search`, `recommend`, `pull`, `add`, `remove`.
 3. **First run** — `setup`, `integrate opencode`, `completion install`,
    `install.sh`, README, CI, Docker end-to-end.
