@@ -36,7 +36,9 @@ class SamplingResult:
 
 
 def _pattern(alias: str) -> re.Pattern:
-    return re.compile(r"(?<![A-Za-z0-9_])" + re.escape(alias) + r"\s*(?:=|:|\|)\s*" + _NUMBER, re.IGNORECASE)
+    return re.compile(
+        r"(?<![A-Za-z0-9_])" + re.escape(alias) + r"\s*(?:=|:|\|)\s*" + _NUMBER, re.IGNORECASE
+    )
 
 
 def parse_model_card(text: str) -> dict[str, str]:
@@ -54,7 +56,7 @@ def parse_model_card(text: str) -> dict[str, str]:
                     continue
                 if best is None or match.start() < best[0]:
                     best = (match.start(), match.group(1))
-                break  # first plausible hit of this alias; earlier aliases may still win on position
+                break  # first plausible hit of this alias; earlier aliases may still win overall
         if best is not None:
             found[key] = best[1]
     return found
@@ -67,10 +69,12 @@ def parse_preset_ini(text: str, model_hint: str) -> dict[str, str]:
         return {}
     names = preset.sections()
     hint = model_hint.lower()
-    chosen = next(
-        (n for n in names if hint and (hint in n.lower() or hint in (preset.get(n, "hf", False) or "").lower())),
-        names[0] if names else None,
-    )
+    def matches(name: str) -> bool:
+        return bool(hint) and (
+            hint in name.lower() or hint in (preset.get(name, "hf", False) or "").lower()
+        )
+
+    chosen = next((n for n in names if matches(n)), names[0] if names else None)
     values = {**preset.items("*"), **(preset.items(chosen) if chosen else {})}
     return {key: value for key, value in values.items() if key not in _PRESET_SKIP}
 

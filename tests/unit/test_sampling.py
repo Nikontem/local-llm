@@ -1,5 +1,10 @@
 from local_llm.sampling import (
-    SamplingResult, load_profiles, parse_model_card, parse_preset_ini, profile_for, values_for,
+    SamplingResult,
+    load_profiles,
+    parse_model_card,
+    parse_preset_ini,
+    profile_for,
+    values_for,
 )
 
 CARD = """
@@ -27,9 +32,13 @@ def test_parse_model_card_rejects_out_of_range_and_returns_empty_when_nothing_ma
 
 
 def test_parse_preset_ini_merges_star_and_matching_section():
-    text = "[*]\nmmap = 1\ntemp = 0.5\n[Qwen3.8-27B]\nhf = unsloth/Qwen3.8-27B-GGUF:Q4_K_XL\ntop-k = 20\nmodel = /x\n[other]\ntemp = 2\n"
-    assert parse_preset_ini(text, "Qwen3.8-27B-GGUF") == {"mmap": "1", "temp": "0.5", "top-k": "20"}
-    assert parse_preset_ini(text, "zzz") == {"mmap": "1", "temp": "0.5", "top-k": "20"}  # first section
+    text = (
+        "[*]\nmmap = 1\ntemp = 0.5\n[Qwen3.8-27B]\n"
+        "hf = unsloth/Qwen3.8-27B-GGUF:Q4_K_XL\ntop-k = 20\nmodel = /x\n[other]\ntemp = 2\n"
+    )
+    expected = {"mmap": "1", "temp": "0.5", "top-k": "20"}
+    assert parse_preset_ini(text, "Qwen3.8-27B-GGUF") == expected
+    assert parse_preset_ini(text, "zzz") == expected  # first section
     assert parse_preset_ini("garbage", "x") == {}
 
 
@@ -55,5 +64,6 @@ def test_values_for_precedence():
     from_card = values_for(repo, preset_ini=None, card=CARD)
     assert from_card.source == "model card" and from_card.values["temp"] == "0.6"
     from_profile = values_for(repo, card="nothing useful")
-    assert from_profile.source == "profile qwen3.8" and from_profile.values["reasoning-effort"] == "medium"
+    assert from_profile.source == "profile qwen3.8"
+    assert from_profile.values["reasoning-effort"] == "medium"
     assert values_for("someone/mystery-GGUF", card="") == SamplingResult({}, "none")
