@@ -757,7 +757,13 @@ def recommend(
             limit_per_group=limit, on_progress=progress,
         )
     except HubError as error:
-        fail(str(error))
+        note = ""
+        if not st.paths.hub_cache_file.is_file():
+            note = (
+                f"\n  No cached listings yet at {st.paths.hub_cache_file};"
+                " the first run needs the network."
+            )
+        fail(f"{error}{note}")
     wanted = [use] if use else list(GROUPS)
     if json_out:
         data = {g: [_candidate_json(c) for c in groups[g]] for g in wanted}

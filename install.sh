@@ -67,8 +67,16 @@ if [ -z "$MODE" ]; then
     if [ "$YES" = "1" ]; then
       MODE=brew
     else
-      printf 'Homebrew found. Install with Homebrew (recommended, brew manages updates) or uv? [brew/uv] '
-      read -r answer
+      # Under "curl ... | sh" the script itself is on stdin, so ask on the terminal
+      # when there is one and take the default otherwise.
+      answer=brew
+      if [ -t 0 ]; then
+        printf 'Homebrew found. Install with Homebrew (recommended, brew manages updates) or uv? [brew/uv] '
+        read -r answer || answer=brew
+      elif ( : < /dev/tty ) 2>/dev/null; then
+        printf 'Homebrew found. Install with Homebrew (recommended, brew manages updates) or uv? [brew/uv] ' > /dev/tty 2>/dev/null || true
+        read -r answer < /dev/tty || answer=brew
+      fi
       case "$answer" in
         uv|UV) MODE=uv ;;
         *) MODE=brew ;;
@@ -115,3 +123,6 @@ say ""
 say "Installed. Next:"
 say "  local-llm setup     guided first run (checks tools, picks models for this machine, wires agents)"
 say "  local-llm --help    every command"
+
+# Stop here: under "curl ... | sh" anything after this line would be executed as commands.
+exit 0

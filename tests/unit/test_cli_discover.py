@@ -52,3 +52,17 @@ def test_search_author_and_json(hubbed):
     result = hubbed.run("search", "Qwen3.8", "--author", "lmstudio-community", "--json")
     data = json.loads(result.output)
     assert [d["repo_id"] for d in data] == ["lmstudio-community/Qwen3.8-27B-GGUF"]
+
+
+def test_recommend_offline_with_a_cold_cache_names_the_cache_file(hubbed):
+    from local_llm import cli
+    from local_llm.hub import HubError
+
+    class Offline:
+        def list_gguf(self, **kwargs):
+            raise HubError("Could not list models on huggingface.co: no network")
+
+    hubbed.monkeypatch.setattr(cli, "_make_hub", lambda st, refresh=False: Offline())
+    result = hubbed.run("recommend")
+    assert result.exit_code == 1
+    assert "no network" in result.output and "hub-cache.json" in result.output

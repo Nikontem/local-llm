@@ -64,3 +64,18 @@ def test_source_override_and_upgrade():
 def test_brew_flag_without_brew_fails_with_instructions():
     result = run("--brew", "-y", path_tools=())
     assert result.returncode == 1 and "brew.sh" in result.stderr + result.stdout
+
+
+def test_piped_invocation_does_not_read_the_script_as_an_answer():
+    """`curl ... | sh` puts the script on stdin; the question must not consume it."""
+    bindir = Path(os.environ.get("TMPDIR", "/tmp")) / f"install-sh-{os.getpid()}-piped"
+    bindir.mkdir(parents=True, exist_ok=True)
+    fake = bindir / "brew"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    env = {"PATH": f"{bindir}:/usr/bin:/bin", "HOME": str(bindir), "LOCAL_LLM_INSTALL_DRY_RUN": "1"}
+    result = subprocess.run(
+        ["sh"], input=SCRIPT.read_text() + "uv\n", capture_output=True, text=True, env=env
+    )
+    assert result.returncode == 0, result.stderr
+    assert "brew install local-llm" in result.stdout
