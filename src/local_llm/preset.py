@@ -132,7 +132,11 @@ class Preset:
     def _span(self, name: str) -> tuple[int, int]:
         """Index of the header line and the index just past the section."""
         start = next(
-            (i for i, line in enumerate(self._lines) if line.kind == "header" and line.section == name),
+            (
+                i
+                for i, line in enumerate(self._lines)
+                if line.kind == "header" and line.section == name
+            ),
             None,
         )
         if start is None:

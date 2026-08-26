@@ -62,7 +62,10 @@ def test_load_missing_file_raises_preset_error(tmp_path):
 def test_file_sizes_sums_model_and_mmproj(tmp_path):
     (tmp_path / "m.gguf").write_bytes(b"x" * 10)
     (tmp_path / "p.gguf").write_bytes(b"y" * 5)
-    p = Preset.parse(f"[a]\nmodel = {tmp_path}/m.gguf\nmmproj = {tmp_path}/p.gguf\n[b]\nmodel = {tmp_path}/m.gguf\n")
+    p = Preset.parse(
+        f"[a]\nmodel = {tmp_path}/m.gguf\nmmproj = {tmp_path}/p.gguf\n"
+        f"[b]\nmodel = {tmp_path}/m.gguf\n"
+    )
     assert p.file_sizes("a") == [10, 5]
     assert p.file_sizes("b") == [10]
 
