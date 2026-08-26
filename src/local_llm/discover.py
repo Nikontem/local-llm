@@ -18,6 +18,9 @@ DEFAULT_BASES = 40  # distinct models examined per run; each costs a few Hub cal
 _FIT_ORDER = {"comfortable": 0, "fits": 1, "too_big": 2, "unknown": 3}
 # GGUF is also used for speech, embedding and image models; only chat-capable ones belong here.
 TEXT_PIPELINES = {None, "", "text-generation", "image-text-to-text", "text2text-generation"}
+# The smallest real quantizations use about 1.5 bits per weight; a file below one
+# bit per parameter is a partial upload, an adapter, or a vocabulary-only file.
+MIN_BITS_PER_PARAM = 1.0
 
 
 @dataclass
@@ -112,7 +115,10 @@ def build_candidate(
             files = hub.repo_files(listing.repo_id)
         except HubError:
             return None
-        options = quant_options(files.files)
+        options = [
+            option for option in quant_options(files.files)
+            if listing.params <= 0 or option.size * 8 / listing.params >= MIN_BITS_PER_PARAM
+        ]
         if not options:
             return None
         gated = gated or files.gated

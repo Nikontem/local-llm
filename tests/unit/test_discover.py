@@ -176,3 +176,17 @@ def test_non_text_pipelines_are_skipped():
     )
     listing = hub.repo_meta(speech.id)
     assert build_candidate(hub, MAC, None, [listing]) is None
+
+
+def test_files_too_small_for_the_parameter_count_are_not_offered():
+    from local_llm.discover import build_candidate
+
+    hub = make_hub()
+    partial = hub.api.models["x/huge-partial-GGUF"] = fake_model(
+        "x/huge-partial-GGUF", downloads=10, tags=["gguf", Q + "x/huge-partial"],
+        gguf={"total": 100e9},
+        files=[("huge-partial-0731.gguf", 5 * GIB), ("huge-partial-Q4_K_M.gguf", 55 * GIB)],
+    )
+    hub.api.models["x/huge-partial"] = fake_model("x/huge-partial")
+    candidate = build_candidate(hub, MAC, None, [hub.repo_meta(partial.id)])
+    assert [o.label for o in candidate.options] == ["Q4_K_M"]
