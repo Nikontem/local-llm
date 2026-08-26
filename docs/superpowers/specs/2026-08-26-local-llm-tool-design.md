@@ -143,14 +143,17 @@ any check fails.
 
 ### 4.3 Router commands (behaviour ported from `local_llm.zsh`)
 
-- `up [-f|--foreground] [--ui|--no-ui]` — starts the router detached, writes a
+- `up [-f|--foreground] [--ui|--no-ui] [--max-models N]` — starts the router detached, writes a
   timestamped log, waits up to 15 s for the port to listen, prints the URL and
   next commands. Already running → says so with the pid and exits 0. `-f` runs
   attached. `--ui` serves llama.cpp's web interface; the mode is remembered in
   state for `restart`.
 - `down` — stops the router and its model children (section 11.3).
-- `restart [--ui|--no-ui] [--no-restore]` — down, up, then reloads every model
-  that was resident before, unless `--no-restore`.
+- `restart [--ui|--no-ui] [--no-restore] [--max-models N]` — down, up, then reloads every model
+  that was resident before, unless `--no-restore`. `--max-models N` (also on `up`)
+  sets how many models may stay loaded for this run; the default is 1 because
+  llama-server evicts by count, never by memory, and two large models on a 48 GB
+  machine both stay resident until the GPU runs out mid-request.
 - `status` — default command. Stopped: state, config path, what to run.
   Running: pid, URL, UI mode, `/health`, config path, one line per model
   child with name, resident memory in GB, and `(asleep)` when under 500 MB.
@@ -262,7 +265,7 @@ question takes its default; a step whose default is "stop" still stops.
    progress, write the section. Write `[*]` from the template if
    `models.ini` does not exist; never rewrite an existing `[*]`.
 8. **Settings.** Write `settings.toml` with port (default 5678), reserve GB,
-   max models (default 2), UI (off), default model (the first chosen, or the
+   max models (default 1), UI (off), default model (the first chosen, or the
    existing `default_model`).
 9. **Integrations.** Offer shell completion with aliases; offer the opencode
    plugin when `opencode` is on PATH; mention `local-llm claude` and
@@ -609,7 +612,7 @@ if not already present). Aliases go on one marked line in the same rc file.
 | HF cache | `huggingface_hub`'s default (`HF_HOME`, `HF_HUB_CACHE` honoured) | those |
 
 `settings.toml` keys and defaults: `port = 5678`, `host = "127.0.0.1"`,
-`max_models = 2`, `reserve_gb = 10`, `ui = false`, `default_model = ""`,
+`max_models = 1`, `reserve_gb = 10`, `ui = false`, `default_model = ""`,
 `allow_remote = false`. The API key is env-only (`LOCAL_LLM_API_KEY`) and is
 never written to disk. Environment variables keep today's names
 (`LOCAL_LLM_PORT`, `LOCAL_LLM_HOST`, `LOCAL_LLM_MAX_MODELS`,
@@ -744,7 +747,7 @@ After `install.sh` has installed the tool: replace the `.zshrc` line that
 sources `local_llm.zsh` with the completion and aliases from
 `local-llm completion install`; rename `local_llm.zsh` to
 `local_llm.zsh.retired`; leave `models.ini` untouched (it is already valid);
-write `settings.toml` with `default_model = "qwen-3.8-q4"`, `max_models = 2`,
+write `settings.toml` with `default_model = "qwen-3.8-q4"`, `max_models = 1`,
 `reserve_gb = 10`, `port = 5678`; run `integrate opencode` (the plugin file
 becomes the one shipped by the tool). Backups and retired router files are
 left where they are.

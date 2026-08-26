@@ -11,7 +11,7 @@ def paths_for(tmp_path):
 def test_defaults_when_nothing_is_configured(tmp_path):
     s = load_settings(paths_for(tmp_path), env={})
     assert s == Settings()
-    assert s.port == 5678 and s.host == "127.0.0.1" and s.max_models == 2
+    assert s.port == 5678 and s.host == "127.0.0.1" and s.max_models == 1
     assert s.reserve_gb == 10 and s.ui is False and s.default_model == ""
     assert s.allow_remote is False and s.api_key == ""
     assert s.openai_base_url == "http://127.0.0.1:5678/v1"

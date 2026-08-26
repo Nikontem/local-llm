@@ -43,7 +43,7 @@ _LOOPBACK = ("127.0.0.1", "localhost", "::1")
 class Settings:
     port: int = 5678
     host: str = "127.0.0.1"
-    max_models: int = 2
+    max_models: int = 1
     reserve_gb: int = 10
     ui: bool = False
     default_model: str = ""

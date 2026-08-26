@@ -17,7 +17,7 @@
 - Command name `local-llm`, package `local_llm`, `src/` layout, hatchling build backend.
 - Environment variable names are the existing ones: `LOCAL_LLM_CONFIG_DIR`, `LOCAL_LLM_PRESET`, `LOCAL_LLM_STATE_DIR`, `LOCAL_LLM_LOG_DIR`, `LOCAL_LLM_PORT`, `LOCAL_LLM_HOST`, `LOCAL_LLM_MAX_MODELS`, `LOCAL_LLM_RESERVE_GB`, `LOCAL_LLM_UI`, `LOCAL_LLM_DEFAULT_MODEL`, `LOCAL_LLM_ALLOW_REMOTE`, `LOCAL_LLM_API_KEY`.
 - Default paths: config `~/.config/local-llm/`, preset `CONFIG/models.ini`, settings `CONFIG/settings.toml`, state `~/.local/state/local-llm/`, logs `STATE/logs/`; `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` honoured.
-- Settings precedence: command flag, then environment, then `settings.toml`, then default. Defaults: `port = 5678`, `host = "127.0.0.1"`, `max_models = 2`, `reserve_gb = 10`, `ui = false`, `default_model = ""`, `allow_remote = false`. The API key is env-only and never written to disk.
+- Settings precedence: command flag, then environment, then `settings.toml`, then default. Defaults: `port = 5678`, `host = "127.0.0.1"`, `max_models = 1`, `reserve_gb = 10`, `ui = false`, `default_model = ""`, `allow_remote = false`. The API key is env-only and never written to disk.
 - Never signal a process whose command line's program name lacks `llama-server`. Never bind a non-loopback host without both `allow_remote` and an API key. Preset writes are atomic and keep a `.bak`.
 - Every error message: what failed, likely cause, the command to run next. Errors go to stderr. Exit codes: 0 success, 1 handled failure, 2 usage error.
 - Log files: `LOGS/llm-router.<YYYY-MM-DDTHH-MM-SS>.log` mode 600, with `LOGS/llm-router.log` a symlink to the current one (a text file `current` holding the path when symlinks are unavailable).
@@ -383,7 +383,7 @@ def paths_for(tmp_path):
 def test_defaults_when_nothing_is_configured(tmp_path):
     s = load_settings(paths_for(tmp_path), env={})
     assert s == Settings()
-    assert s.port == 5678 and s.host == "127.0.0.1" and s.max_models == 2
+    assert s.port == 5678 and s.host == "127.0.0.1" and s.max_models == 1
     assert s.reserve_gb == 10 and s.ui is False and s.default_model == ""
     assert s.allow_remote is False and s.api_key == ""
     assert s.openai_base_url == "http://127.0.0.1:5678/v1"
@@ -3058,6 +3058,18 @@ def test_up_with_ui_and_port_override(harness):
     assert h.paths.ui_file.read_text().strip() == "1"
 
 
+def test_up_max_models_flag_and_default(harness):
+    h = harness
+    h.backend.spawn_listening = {5678}
+    h.run("up")
+    assert h.backend.spawned[0][0][-5:-1] == ["--models-max", "1", "--models-autoload", "--no-ui"][:4] or "1" in h.backend.spawned[0][0]
+    h.run("down")
+    h.backend.procs.clear()
+    h.run("up", "--max-models", "2")
+    args, _ = h.backend.spawned[1]
+    assert args[args.index("--models-max") + 1] == "2"
+
+
 def test_up_failure_shows_log_tail(harness):
     h = harness
     h.backend.spawn_dies = True
@@ -3371,11 +3383,16 @@ def _stop(router: Router) -> None:
 def up(
     foreground: bool = typer.Option(False, "-f", "--foreground", help="Stay attached to the terminal."),
     ui: bool | None = typer.Option(None, "--ui/--no-ui", help="Serve llama.cpp's web UI as well."),
+    max_models: int | None = typer.Option(
+        None, "--max-models", min=0, help="How many models may stay loaded at once (0 = unlimited)."
+    ),
 ) -> None:
     """Start the router in the background and write a timestamped log."""
     st = state()
     if ui is not None:
         st.settings.ui = ui
+    if max_models is not None:
+        st.settings.max_models = max_models
     router = st.router()
     if foreground:
         out.print("Starting router in the foreground. Ctrl-C to stop.")
@@ -3403,11 +3420,16 @@ app.command(name="stop", hidden=True)(down)
 def restart(
     ui: bool | None = typer.Option(None, "--ui/--no-ui", help="Change the web UI mode."),
     restore: bool = typer.Option(True, "--restore/--no-restore", help="Reload the models that were loaded."),
+    max_models: int | None = typer.Option(
+        None, "--max-models", min=0, help="How many models may stay loaded at once (0 = unlimited)."
+    ),
 ) -> None:
     """Stop and start the router, keeping the UI mode and reloading resident models."""
     st = state()
     router = st.router()
     st.settings.ui = router.ui_state() if ui is None else ui
+    if max_models is not None:
+        st.settings.max_models = max_models
     keep = router.loaded_model_names() if restore else []
     _stop(router)
     _sleep(1)
@@ -3531,7 +3553,8 @@ def ui(yes: bool = typer.Option(False, "-y", "--yes", help="Restart without aski
         if not typer.confirm("Restart with the web UI now?", default=False):
             out.print("Left running as it is.")
             raise typer.Exit(1)
-    restart(ui=True, restore=True)
+    # Called as a plain function: pass every parameter, or typer's Option objects leak in.
+    restart(ui=True, restore=True, max_models=None)
     _open(url)
 
 
@@ -3584,7 +3607,7 @@ Keep the trailing `# --- model commands (Task 15)` marker; Task 15 appends below
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_cli_router.py tests/unit/test_cli_version.py -q`
-Expected: `21 passed`
+Expected: `22 passed`
 
 - [ ] **Step 6: Commit**
 
@@ -3642,6 +3665,7 @@ def test_load_rejects_unknown_model(harness):
 def test_load_two_models_within_budget(harness):
     h = harness
     running_router(h)
+    h.monkeypatch.setenv("LOCAL_LLM_MAX_MODELS", "2")
     h.monkeypatch.setattr(cli, "total_ram", lambda: 48 * GIB)
     result = h.run("load", "big", "small")
     assert result.exit_code == 0, result.output
@@ -3658,12 +3682,13 @@ def test_load_more_than_max_models(harness):
     h.monkeypatch.setenv("LOCAL_LLM_MAX_MODELS", "1")
     result = h.run("load", "big", "small")
     assert result.exit_code == 1
-    assert "holds at most 1" in result.output and "LOCAL_LLM_MAX_MODELS=2 local-llm restart" in result.output
+    assert "holds at most 1" in result.output and "local-llm restart --max-models 2" in result.output
 
 
 def test_load_over_budget_refuses_unless_forced(harness):
     h = harness
     running_router(h)
+    h.monkeypatch.setenv("LOCAL_LLM_MAX_MODELS", "2")
     h.monkeypatch.setattr(cli, "total_ram", lambda: 11 * GIB)  # 1 GB budget; each model needs ~1 GB
     result = h.run("load", "big", "small")
     assert result.exit_code == 1
@@ -3784,7 +3809,8 @@ def load(
         fail(
             f"Asked for {len(models)} models but the router holds at most {limit}.\n"
             "The first would be evicted as the last loaded. Raise it with:\n"
-            f"  LOCAL_LLM_MAX_MODELS={len(models)} local-llm restart"
+            f"  local-llm restart --max-models {len(models)}\n"
+            f"  or set LOCAL_LLM_MAX_MODELS={len(models)}, or max_models in settings.toml"
         )
     budget = budget_bytes(total_ram(), st.settings.reserve_gb)
     out.print("Requested:")
@@ -3954,7 +3980,7 @@ uv run local-llm doctor; echo "exit=$?"
 uv run local-llm models
 ```
 
-Expected: every check `ok` except `hf token` (warn: token present but invalid — that is the true state of this machine) and possibly `agents`; exit=0. `models` lists the five sections with sizes near 22.4, 17.7, 18.8, 18.5 and 1.1 GB.
+Expected: every check `ok` except `hf token` (warn: token present but invalid — that is the true state of this machine) and possibly `agents`; exit=0. `models` lists the five sections (named `org/repo:QUANT`, e.g. `unsloth/Qwen3.8-27B-GGUF:Q4_K_XL`) with sizes near 22.4, 17.7, 18.8, 18.5 and 1.1 GB.
 
 - [ ] **Step 2: Start, inspect, load, unload**
 
@@ -3963,33 +3989,33 @@ Run:
 ```bash
 uv run local-llm up
 uv run local-llm status
-uv run local-llm load qwen2.5-1.5b-small
+uv run local-llm load Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M
 sleep 5; uv run local-llm status
-uv run local-llm unload qwen2.5-1.5b-small
+uv run local-llm unload Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M
 uv run local-llm logs -n 5
-uv run local-llm env qwen2.5-1.5b-small
+uv run local-llm env Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M
 ```
 
-Expected: `Router is up.` with the URL; status shows `running`, the pid, `health: {"status":"ok"}`; load prints the estimate (~2.2 GB), the budget (`38.0 GB`), and `{"success":true}`; the second status lists `qwen2.5-1.5b-small` with about 2 GB resident; unload returns `{"success":true}`; logs show llama-server lines; env prints eight export lines.
+Expected: `Router is up.` with the URL; status shows `running`, the pid, `health: {"status":"ok"}`; load prints the estimate (~2.2 GB), the budget (`38.0 GB`), and `{"success":true}`; the second status lists `Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M` with about 2 GB resident; unload returns `{"success":true}`; logs show llama-server lines; env prints eight export lines.
 
 - [ ] **Step 3: Restart with restore, then stop**
 
 Run:
 
 ```bash
-uv run local-llm load qwen2.5-1.5b-small
+uv run local-llm load Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M
 uv run local-llm restart
 uv run local-llm status
 uv run local-llm down
 pgrep -fl llama-server; echo "leftover-check exit=$?"
 ```
 
-Expected: restart prints `Router is down.`, `Router is up.`, `Restoring 1 model(s) that were loaded:` and `qwen2.5-1.5b-small ... ok`; status shows it resident; down prints `Router is down.`; pgrep prints nothing and exits 1.
+Expected: restart prints `Router is down.`, `Router is up.`, `Restoring 1 model(s) that were loaded:` and `Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M ... ok`; status shows it resident; down prints `Router is down.`; pgrep prints nothing and exits 1.
 
 - [ ] **Step 4: Agent wrapper without launching an agent**
 
-Run: `uv run local-llm claude qwen2.5-1.5b-small -- --version`
-Expected: one line `claude -> qwen2.5-1.5b-small (context 32768) at http://127.0.0.1:5678` followed by Claude Code's own version output (the process is replaced by `claude`).
+Run: `uv run local-llm claude Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M -- --version`
+Expected: one line `claude -> Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M (context 32768) at http://127.0.0.1:5678` followed by Claude Code's own version output (the process is replaced by `claude`).
 
 - [ ] **Step 5: Record and commit**
 
