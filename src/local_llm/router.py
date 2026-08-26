@@ -355,7 +355,47 @@ class Router:
     def loaded_model_names(self) -> list[str]:
         return [child.model for child in self.children() if child.model]
 
-    # ------------------------------------------------------------ http (Task 10)
+    # ------------------------------------------------------------ http
 
     def _urllib_http(self, method: str, path: str, body: dict | None) -> dict:
-        raise RouterError("HTTP client not implemented yet")
+        url = f"http://{self.settings.host}:{self.settings.port}{path}"
+        data = json.dumps(body).encode() if body is not None else None
+        request = urllib.request.Request(url, data=data, method=method)
+        request.add_header("Content-Type", "application/json")
+        if self.settings.api_key:
+            request.add_header("Authorization", f"Bearer {self.settings.api_key}")
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                text = response.read().decode(errors="replace")
+        except urllib.error.HTTPError as error:
+            text = error.read().decode(errors="replace")
+        except (urllib.error.URLError, OSError) as error:
+            raise RouterError(
+                f"Router is not answering at {url}: {error}\n"
+                "  local-llm status    to see whether it is running"
+            ) from None
+        if not text:
+            return {}
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return {"raw": text}
+
+    def health(self) -> dict:
+        return self.http("GET", "/health", None)
+
+    def list_models(self, reload: bool = False) -> dict:
+        return self.http("GET", "/models?reload=1" if reload else "/models", None)
+
+    def load_model(self, name: str) -> dict:
+        return self.http("POST", "/models/load", {"model": name})
+
+    def unload_model(self, name: str) -> dict:
+        return self.http("POST", "/models/unload", {"model": name})
+
+    def chat(self, model: str, prompt: str, max_tokens: int = 8) -> dict:
+        return self.http(
+            "POST",
+            "/v1/chat/completions",
+            {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens},
+        )
