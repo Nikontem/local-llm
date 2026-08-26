@@ -267,6 +267,94 @@ class Router:
         self.paths.ensure_state_dirs()
         self.paths.ui_file.write_text("1\n" if on else "0\n")
 
+    # ------------------------------------------------------------ start
+
+    def start(self) -> StartResult:
+        self.check_preconditions()
+        existing = self.pid()
+        if existing is not None:
+            return StartResult(existing, None, already_running=True)
+        self.paths.ensure_state_dirs()
+        log_file = new_run_log(self.paths.log_dir)
+        pid = self.backend.spawn(self.server_args(), log_file)
+        self.paths.pid_file.write_text(f"{pid}\n")
+        self.paths.pid_file.chmod(0o600)
+        self.write_ui_state(self.settings.ui)
+        for _ in range(int(START_TIMEOUT / _POLL)):
+            if self.backend.listening(pid, self.settings.port):
+                return StartResult(pid, log_file)
+            if self.backend.info(pid) is None:
+                break
+            self._sleep(_POLL)
+        self.paths.pid_file.unlink(missing_ok=True)
+        tail = "\n".join(tail_lines(log_file, 30))
+        raise RouterError(f"Router failed to start. Last lines of the log:\n{tail}")
+
+    def run_foreground(self) -> int:
+        self.check_preconditions()
+        return subprocess.call(self.server_args())
+
+    # ------------------------------------------------------------ stop
+
+    def stop(self) -> StopResult:
+        parents: list[int] = []
+        if self.paths.pid_file.is_file():
+            try:
+                parents.append(int(self.paths.pid_file.read_text().strip()))
+            except ValueError:
+                pass
+        for proc in self.backend.find("llama-server"):
+            if self.backend.listening(proc.pid, self.settings.port) and proc.pid not in parents:
+                parents.append(proc.pid)
+        parents = [p for p in parents if self.backend.info(p) is not None]
+        if not parents:
+            self.paths.pid_file.unlink(missing_ok=True)
+            return StopResult(was_running=False)
+
+        # Children hold the model weights. Note them before the parent dies, or
+        # they become unreachable orphans still holding many GB of RAM.
+        kids: list[int] = []
+        for parent in parents:
+            for kid in self.backend.children(parent):
+                if kid.pid not in kids:
+                    kids.append(kid.pid)
+
+        result = StopResult(was_running=True)
+        for parent in parents:
+            self._stop_one(parent, "router", result)
+        for kid in kids:
+            if self.backend.info(kid) is not None:
+                result.orphans_cleaned += 1
+                self._stop_one(kid, "model server", result)
+        self.paths.pid_file.unlink(missing_ok=True)
+        return result
+
+    def _stop_one(self, pid: int, label: str, result: StopResult) -> None:
+        info = self.backend.info(pid)
+        if info is None:
+            return
+        if not is_llama_server(info.cmdline):
+            result.refused.append(f"pid {pid}: {' '.join(info.cmdline)}")
+            return
+        self._log(f"Stopping {label} pid {pid}")
+        self.backend.terminate(pid)
+        if self.backend.wait(pid, STOP_TIMEOUT):
+            return
+        self._log(f"  did not exit in {int(STOP_TIMEOUT)}s, forcing")
+        self.backend.kill(pid)
+        self.backend.wait(pid, 2.0)
+
+    # ------------------------------------------------------------ children
+
+    def children(self) -> list[ChildInfo]:
+        pid = self.pid()
+        if pid is None:
+            return []
+        return [ChildInfo(k.pid, _alias_of(k.cmdline), k.rss) for k in self.backend.children(pid)]
+
+    def loaded_model_names(self) -> list[str]:
+        return [child.model for child in self.children() if child.model]
+
     # ------------------------------------------------------------ http (Task 10)
 
     def _urllib_http(self, method: str, path: str, body: dict | None) -> dict:
