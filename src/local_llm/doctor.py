@@ -189,7 +189,8 @@ def run_checks(
         )
     elif token.state == "absent":
         checks.append(Check(
-            "hf token", "warn", "no token; gated repos will be unavailable", fix="hf auth login"
+            "hf token", "warn", "no token; gated repos unavailable, downloads rate-limited",
+            fix="hf auth login"
         ))
     else:
         checks.append(Check(

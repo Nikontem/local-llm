@@ -329,6 +329,10 @@ Every key also has an environment variable, which wins over the file:
   shows what our own router thinks is running. Pick another port with
   `local-llm --port N <command>` (the flag goes before the subcommand) or
   `port = N` in `settings.toml`.
+- **A download stalls** — Hugging Face throttles unauthenticated downloads,
+  and a CDN node can stall. `pull` gives up after two minutes without new
+  data and says so; the partial file is kept, so running the same command
+  again resumes. Logging in (`hf auth login`) lifts the limit.
 - **Gated repo** — a repository whose weights need accepting the publisher's
   terms shows `gated` in `search`/`recommend`. Accept the terms on the
   repository's Hugging Face page, then `hf auth login`.

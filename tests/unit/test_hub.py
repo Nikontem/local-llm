@@ -201,3 +201,35 @@ def test_extra_tokens_ignores_packaging_words():
     heretic = extra_tokens("x/Qwen2.5-0.5B-Instruct-heretic", "Qwen/Qwen2.5-0.5B-Instruct")
     assert heretic == {"heretic"}
     assert extra_tokens("x/Model-Q4_K_M-imatrix-GGUF", "org/Model") == set()
+
+
+def test_download_gives_up_when_the_file_stops_growing(tmp_path, monkeypatch):
+    import time as _time
+
+    def never_finishes(repo_id, filename, **kwargs):
+        _time.sleep(5)
+        return "/never"
+
+    hub = Hub(api=FakeApi(MODELS), download_fn=never_finishes)
+    monkeypatch.setattr(hub, "cache_dir", lambda: tmp_path)
+    with pytest.raises(HubError, match=r"(?s)stalled.*hf auth login"):
+        hub.download("unsloth/Qwen3.8-27B-GGUF", ["a.gguf"], stall_seconds=0.3)
+
+
+def test_download_keeps_waiting_while_the_file_grows(tmp_path, monkeypatch):
+    import time as _time
+
+    blobs = tmp_path / "models--unsloth--Qwen3.8-27B-GGUF" / "blobs"
+    blobs.mkdir(parents=True)
+    part = blobs / "abc.incomplete"
+
+    def slow_but_alive(repo_id, filename, **kwargs):
+        for step in range(6):
+            part.write_bytes(b"x" * (step + 1))
+            _time.sleep(0.2)
+        return str(tmp_path / "done.gguf")
+
+    hub = Hub(api=FakeApi(MODELS), download_fn=slow_but_alive)
+    monkeypatch.setattr(hub, "cache_dir", lambda: tmp_path)
+    result = hub.download("unsloth/Qwen3.8-27B-GGUF", ["a.gguf"], stall_seconds=0.8)
+    assert result == [tmp_path / "done.gguf"]

@@ -60,6 +60,7 @@ def token_status(timeout: float = 10.0) -> TokenStatus:
     return TokenStatus("valid", info.get("name") if isinstance(info, dict) else None)
 
 
+STALL_SECONDS = 120.0  # a download that has not grown for this long is reported, not waited on
 LIST_EXPAND = [
     "author", "downloads", "likes", "trendingScore", "pipeline_tag", "gated", "tags",
     "baseModels", "gguf",
@@ -356,21 +357,61 @@ class Hub:
         return hf_hub_download(repo_id=repo_id, filename=filename)
 
     def download(
-        self, repo_id: str, filenames: list[str], progress: Callable[[str], None] | None = None
+        self, repo_id: str, filenames: list[str], progress: Callable[[str], None] | None = None,
+        stall_seconds: float = STALL_SECONDS,
     ) -> list[Path]:
-        from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
-
         paths: list[Path] = []
         for name in filenames:
             if progress:
                 progress(name)
-            try:
-                paths.append(Path(self._download_or_real(repo_id, name)))
-            except GatedRepoError:
-                raise HubError(_gated_message(repo_id)) from None
-            except (HfHubHTTPError, OSError) as error:
-                raise HubError(f"Download of {repo_id}/{name} failed: {error}") from None
+            paths.append(self._download_with_watchdog(repo_id, name, stall_seconds))
         return paths
+
+    def _download_with_watchdog(self, repo_id: str, name: str, stall_seconds: float) -> Path:
+        """Run the download on a daemon thread and give up when the file stops growing.
+
+        The Hub library retries quietly for a long time when a transfer is
+        throttled or a CDN node stalls; a person deserves a message instead.
+        """
+        from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
+
+        outcome: dict[str, object] = {}
+        done = threading.Event()
+
+        def work() -> None:
+            try:
+                outcome["path"] = self._download_or_real(repo_id, name)
+            except Exception as error:  # noqa: BLE001 - forwarded to the caller thread below
+                outcome["error"] = error
+            finally:
+                done.set()
+
+        threading.Thread(target=work, daemon=True).start()
+        blobs = self.cache_dir() / f"models--{repo_id.replace('/', '--')}" / "blobs"
+        last_size, last_change = -1, time.monotonic()
+        while not done.wait(1.0):
+            size = _incomplete_bytes(blobs)
+            if size != last_size:
+                last_size, last_change = size, time.monotonic()
+            elif time.monotonic() - last_change > stall_seconds:
+                raise HubError(
+                    f"Download of {repo_id}/{name} stalled: no data for {int(stall_seconds)} s"
+                    f" ({size / 1e6:.0f} MB so far).\n"
+                    "  Hugging Face throttles unauthenticated downloads; `hf auth login` lifts"
+                    " the limit. The partial file is kept, so running the same command again"
+                    " resumes."
+                )
+        if "error" in outcome:
+            error = outcome["error"]
+            if isinstance(error, GatedRepoError):
+                raise HubError(_gated_message(repo_id)) from None
+            if isinstance(error, HfHubHTTPError | OSError):
+                raise HubError(f"Download of {repo_id}/{name} failed: {error}") from None
+            raise HubError(f"Download of {repo_id}/{name} failed: {error}") from None
+        return Path(str(outcome["path"]))
+
+    def cache_dir(self) -> Path:
+        return hf_cache_dir()
 
     def cached_path(self, repo_id: str, filename: str) -> Path | None:
         if self._cached_path_fn is not None:
@@ -380,6 +421,13 @@ class Hub:
 
         found = try_to_load_from_cache(repo_id, filename)
         return Path(found) if isinstance(found, str) else None
+
+
+def _incomplete_bytes(blobs: Path) -> int:
+    try:
+        return sum(p.stat().st_size for p in blobs.glob("*.incomplete"))
+    except OSError:
+        return 0
 
 
 def free_disk_bytes(path: Path) -> int:
