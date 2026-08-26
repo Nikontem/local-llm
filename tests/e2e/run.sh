@@ -9,4 +9,4 @@ args=()
 for var in E2E_MODEL E2E_QUANT HF_TOKEN; do
   if [ -n "${!var:-}" ]; then args+=(-e "$var=${!var}"); fi
 done
-docker run --rm "${args[@]}" "$IMAGE"
+docker run --rm ${args[@]+"${args[@]}"} "$IMAGE"
