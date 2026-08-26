@@ -104,8 +104,12 @@ def _split_agent_args(model: str | None, extra: list[str]) -> tuple[str | None, 
 def main(
     ctx: typer.Context,
     version: bool = typer.Option(False, "--version", help="Print the version and exit."),
-    port: int | None = typer.Option(None, "--port", help="Router port (overrides settings and LOCAL_LLM_PORT)."),
-    host: str | None = typer.Option(None, "--host", help="Router host (overrides settings and LOCAL_LLM_HOST)."),
+    port: int | None = typer.Option(
+        None, "--port", help="Router port (overrides settings and LOCAL_LLM_PORT)."
+    ),
+    host: str | None = typer.Option(
+        None, "--host", help="Router host (overrides settings and LOCAL_LLM_HOST)."
+    ),
 ) -> None:
     if version:
         out.print(f"local-llm {__version__}")
@@ -155,7 +159,9 @@ def _stop(router: Router) -> None:
 
 @app.command()
 def up(
-    foreground: bool = typer.Option(False, "-f", "--foreground", help="Stay attached to the terminal."),
+    foreground: bool = typer.Option(
+        False, "-f", "--foreground", help="Stay attached to the terminal."
+    ),
     ui: bool | None = typer.Option(None, "--ui/--no-ui", help="Serve llama.cpp's web UI as well."),
     max_models: int | None = typer.Option(
         None, "--max-models", min=0, help="How many models may stay loaded at once (0 = unlimited)."
@@ -193,7 +199,9 @@ app.command(name="stop", hidden=True)(down)
 @app.command()
 def restart(
     ui: bool | None = typer.Option(None, "--ui/--no-ui", help="Change the web UI mode."),
-    restore: bool = typer.Option(True, "--restore/--no-restore", help="Reload the models that were loaded."),
+    restore: bool = typer.Option(
+        True, "--restore/--no-restore", help="Reload the models that were loaded."
+    ),
     max_models: int | None = typer.Option(
         None, "--max-models", min=0, help="How many models may stay loaded at once (0 = unlimited)."
     ),
@@ -298,7 +306,9 @@ def _open(url: str) -> None:
 
 
 @app.command()
-def ui(yes: bool = typer.Option(False, "-y", "--yes", help="Restart without asking if needed.")) -> None:
+def ui(
+    yes: bool = typer.Option(False, "-y", "--yes", help="Restart without asking if needed."),
+) -> None:
     """Open the web UI in a browser, starting or reconfiguring the router as needed."""
     st = state()
     router = st.router()
@@ -374,3 +384,172 @@ def prune_logs_cmd(
 
 
 # ---------------------------------------------------------------- model commands (Task 15)
+
+
+@app.command()
+def load(
+    models: list[str] = typer.Argument(  # noqa: B008 - typer needs the call as the default
+        ..., autocompletion=complete_model, help="Model names from models.ini."
+    ),
+    force: bool = typer.Option(False, "--force", help="Load even if over the memory budget."),
+) -> None:
+    """Load one or more models now; refuses if they will not fit."""
+    st = state()
+    router = st.router()
+    preset = st.preset()
+    if router.pid() is None:
+        fail("Router is not running. Start it first: local-llm up")
+    for name in models:
+        if name not in preset.sections():
+            fail(f"Unknown model: {name}\n  local-llm models    to see what is available")
+    limit = st.settings.max_models
+    if len(models) > limit:
+        fail(
+            f"Asked for {len(models)} models but the router holds at most {limit}.\n"
+            "The first would be evicted as the last loaded. Raise it with:\n"
+            f"  local-llm restart --max-models {len(models)}\n"
+            f"  or set LOCAL_LLM_MAX_MODELS={len(models)}, or max_models in settings.toml"
+        )
+    budget = budget_bytes(total_ram(), st.settings.reserve_gb)
+    out.print("Requested:")
+    total = 0
+    for name in models:
+        try:
+            estimate = estimate_bytes(preset.file_sizes(name))
+        except PresetError as error:
+            fail(f"  {name} - cannot find its model file, refusing to guess\n  {error}")
+        total += estimate
+        out.print(f"  {name}  ~{human_gb(estimate)}")
+    out.print()
+    out.print(f"  estimated total:  {human_gb(total)}")
+    if budget > 0:
+        reserved = st.settings.reserve_gb
+        out.print(f"  usable memory:    {human_gb(budget)}  (RAM minus {reserved} GB reserved)")
+    if budget > 0 and total > budget:
+        out.print()
+        over = human_gb(total - budget)
+        if force:
+            out.print(f"Over budget by {over} - loading anyway because --force was given.")
+            out.print("Expect swapping.")
+        else:
+            fail(
+                f"Refusing to load: over budget by {over}.\n\n"
+                "  load them one at a time, and let the idle one sleep, or\n"
+                f"  local-llm load {' '.join(models)} --force    to do it anyway"
+            )
+    out.print()
+    for name in models:
+        try:
+            reply = router.load_model(name)
+        except RouterError as error:
+            fail(str(error))
+        out.print(f"loading {name} ... {json.dumps(reply, separators=(',', ':'))}")
+    out.print()
+    out.print("  local-llm status    confirm what is resident")
+
+
+@app.command()
+def unload(model: str = typer.Argument(..., autocompletion=complete_model)) -> None:
+    """Release a model immediately rather than waiting for it to go idle."""
+    st = state()
+    router = st.router()
+    if router.pid() is None:
+        fail("Router is not running.")
+    try:
+        reply = router.unload_model(model)
+    except RouterError as error:
+        fail(str(error))
+    out.print(json.dumps(reply, separators=(",", ":")))
+
+
+# ---------------------------------------------------------------- agents
+
+_PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
+
+
+@app.command(context_settings=_PASSTHROUGH)
+def claude(
+    ctx: typer.Context,
+    model: str | None = typer.Argument(
+        None, autocompletion=complete_model, help="Model name; default from settings."
+    ),
+) -> None:
+    """Run Claude Code against the router. Arguments after -- go to claude."""
+    st = state()
+    preset = st.preset()
+    model, extra = _split_agent_args(model, ctx.args)
+    try:
+        name = resolve_model(model, preset, st.settings)
+        env = claude_env(name, preset, st.settings)
+        context = env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "unknown")
+        out.print(f"claude -> {name} (context {context}) at {st.settings.anthropic_base_url}")
+        exec_with_env("claude", extra, env)
+    except AgentError as error:
+        fail(str(error))
+
+
+@app.command(context_settings=_PASSTHROUGH)
+def copilot(
+    ctx: typer.Context,
+    model: str | None = typer.Argument(
+        None, autocompletion=complete_model, help="Model name; default from settings."
+    ),
+    online: bool = typer.Option(False, "--online/--offline", help="Let copilot reach the network."),
+) -> None:
+    """Run GitHub Copilot CLI against the router. Arguments after -- go to copilot."""
+    st = state()
+    preset = st.preset()
+    model, extra = _split_agent_args(model, ctx.args)
+    try:
+        name = resolve_model(model, preset, st.settings)
+        env = copilot_env(name, preset, st.settings, offline=not online)
+        context = env.get("COPILOT_PROVIDER_MAX_PROMPT_TOKENS", "unknown")
+        out.print(f"copilot -> {name} (context {context}, offline={'false' if online else 'true'})")
+        exec_with_env("copilot", extra, env)
+    except AgentError as error:
+        fail(str(error))
+
+
+@app.command()
+def env(
+    model: str | None = typer.Argument(
+        None, autocompletion=complete_model, help="Model name; default from settings."
+    ),
+    shell: str = typer.Option("zsh", "--shell", help="zsh, bash or fish."),
+) -> None:
+    """Print export lines that point any OpenAI- or Anthropic-style tool at the router."""
+    st = state()
+    preset = st.preset()
+    try:
+        name = resolve_model(model, preset, st.settings)
+    except AgentError as error:
+        fail(str(error))
+    out.print(export_lines(name, preset, st.settings, st.paths.preset, shell=shell), end="")
+
+
+# ---------------------------------------------------------------- doctor
+
+
+@app.command()
+def doctor(
+    fix: bool = typer.Option(False, "--fix", help="Offer to run the safe fixes."),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable output."),
+) -> None:
+    """Check prerequisites, config and the port; print the fix for anything wrong."""
+    st = state()
+    checks = run_checks(st.paths, st.settings, router_pid=st.router().pid())
+    failed = any(check.status == "fail" for check in checks)
+    if json_out:
+        out.print(json.dumps([asdict(check) for check in checks], indent=2))
+        raise typer.Exit(1 if failed else 0)
+    marks = {"ok": "ok  ", "warn": "warn", "fail": "FAIL"}
+    for check in checks:
+        out.print(f"  {marks[check.status]}  {check.name:<16} {check.detail}")
+        if check.fix and check.status != "ok":
+            out.print(f"        {'':<16} fix: {check.fix}")
+    if fix:
+        for check in checks:
+            if check.fix_cmd and check.status != "ok":
+                if typer.confirm(f"Run: {' '.join(check.fix_cmd)} ?", default=True):
+                    subprocess.call(check.fix_cmd)
+    raise typer.Exit(1 if failed else 0)
