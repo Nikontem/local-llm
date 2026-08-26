@@ -48,7 +48,7 @@ It packages, in a portable and testable form, the setup that exists today in
 | Language | Python 3.11+, one package for runtime and wizard |
 | Name | command `local-llm`, package `local_llm`, repo `Nikontem/local-llm` |
 | Model files | downloaded with the `huggingface_hub` library into the standard Hugging Face cache (`~/.cache/huggingface/hub`); preset sections use absolute paths (`model = /abs/file.gguf`) |
-| Recommendations | curated catalog shipped with the tool, sizes fetched live, filtered by the machine's budget |
+| Recommendations | computed from this machine and live Hugging Face data; no model list in the tool; every suggestion overridable (repo, quantization, file, context, flags) |
 | Install paths | `install.sh` offers Homebrew tap (preferred when `brew` exists) or `uv tool install`; a `Nikontem/homebrew-tap` formula is part of version 1 |
 | Supervision | `local-llm up` starts a detached `llama-server` with a pid file, like today; no OS service in version 1 |
 | License | MIT |
@@ -80,8 +80,9 @@ Each module has one job and is testable without the others.
 | `hardware` | `Machine` record: OS, arch, chip name, total RAM, GPU kind and VRAM, usable budget in bytes | `psutil`, `subprocess` |
 | `estimate` | memory estimate for a set of GGUF files; fit classification against a budget | stdlib |
 | `hub` | search, repo file lists with sizes, GGUF metadata, token detection and validation, downloads with progress, a one-day on-disk cache of API answers | `huggingface_hub` |
-| `catalog` | loads `catalog.json`, resolves each entry against the Hub, ranks by fit and use case | `hub`, `estimate` |
-| `sampling` | maps a repo/architecture to a sampling profile from `sampling.json`; honours a repo's own `preset.ini` if present | `hub` |
+| `discover` | candidate listing, lineage, use-case grouping, quantization choice, ranking (section 7) | `hub`, `estimate`, `gguf` |
+| `gguf` | reads a GGUF file header (architecture, layers, KV heads, head size, context, chat template) and computes the KV-cache cost per token; no dependency | stdlib |
+| `sampling` | sampling values for a model: the repo's `preset.ini`, else parsed from its model card, else the family table in `sampling.json` | `hub` |
 | `router` | start, stop, status, restart, load, unload, API client for `llama-server` | `psutil`, `paths`, `preset` |
 | `logs` | per-run log files, current-log pointer, pruning | `paths` |
 | `agents` | builds the environment for `claude`, `copilot`, and `env`, then execs | `preset`, `settings` |
@@ -89,7 +90,7 @@ Each module has one job and is testable without the others.
 | `doctor` | runs checks, prints fixes, optionally applies safe ones | everything above |
 | `setup` | the guided first-run flow, composed from the modules above | everything above |
 
-Package data: `catalog.json`, `sampling.json`, `resources/opencode-plugin.js`,
+Package data: `sampling.json`, `resources/opencode-plugin.js`,
 `resources/models.template.ini`.
 
 ### 3.3 Data flow
@@ -97,9 +98,9 @@ Package data: `catalog.json`, `sampling.json`, `resources/opencode-plugin.js`,
 ```
 setup / recommend / search / pull
    hardware.detect() ──► Machine(budget_bytes)
-   hub.repo_files(repo) ──► [(filename, size)] + gguf metadata
-   estimate.for_files(files) ──► bytes ──► fit(budget) ∈ {comfortable, fits, too_big}
-   sampling.profile_for(repo, arch) ──► {temp, top-k, ...}
+   discover.candidates() ──► hub listings ──► lineage ──► groups ──► per-repo files + sizes
+   estimate.for_files(files) [+ gguf.kv_bytes(c)] ──► fit(budget) ∈ {comfortable, fits, too_big}
+   sampling.values_for(repo, card, arch) ──► {temp, top-k, ...} + source
    preset.add_section(name, keys) ──► models.ini (atomic write, .bak kept)
    router.reload_models() if running
 
@@ -172,31 +173,42 @@ any check fails.
 - `prune-logs [DAYS]` — deletes rotated logs older than DAYS (default 30), never
   the current one.
 
-### 4.4 `local-llm recommend [--use coding|general|small|vision] [--all-sizes] [--json]`
+### 4.4 `local-llm recommend [--use coding|general|small|vision] [--include-finetunes] [--limit N] [--refresh] [--pick] [--json]`
 
-Prints a table grouped by use case: name, repo, chosen quantization, size on
-disk, estimated resident memory, fit (comfortable / fits / too big), one-line
-reason from the catalog, and whether it is already in `models.ini`. Section 7
-defines the rules. `--all-sizes` also lists every quantization of each entry
-with its fit.
+Prints a table grouped by use case: model, quantizer repo, suggested
+quantization, size on disk, estimated memory, fit (comfortable / fits / too
+big), lineage, thinking/vision marks, and whether it is already downloaded or
+in `models.ini`. Section 7 defines the rules; nothing in it is a fixed list.
+`--pick` turns the table into a numbered menu: choose a model, then choose
+its quantization from every available one (the suggestion is the default),
+then the tool runs `pull` for it.
 
 ### 4.5 `local-llm search TEXT [--limit N] [--author A] [--json]`
 
 Free-text search of GGUF repositories on Hugging Face sorted by downloads.
-Each result shows repo id, downloads, likes, license, and — for the top 10 —
-the quantizations available with size and fit. Results with no GGUF files are
-skipped. A gated repo is marked `gated`.
+Each result shows repo id, downloads, likes, license, lineage (vendor release,
+community derivative, unknown), and — for the top 10 — the quantizations
+available with size and fit, plus the exact `pull` command for the suggested
+one. Results with no GGUF files are skipped. A gated repo is marked `gated`.
 
-### 4.6 `local-llm pull REPO[:QUANT] [--name NAME] [--quant Q] [--no-tuning] [--context N] [--yes]`
+### 4.6 `local-llm pull REPO[:QUANT] [--quant Q] [--file NAME] [--name NAME] [--context N] [--set KEY=VALUE]... [--no-tuning] [--yes]`
 
-1. Resolves the repo and picks the quantization (section 7.3) unless given.
+1. Resolves the repo. The quantization is `:QUANT` or `--quant`; `--file`
+   names one exact file when tags are ambiguous (a repo carrying both
+   `UD-Q4_K_XL` and `Q4_K_XL` files — the tool lists the ambiguity and asks).
+   With none given, the machine-based suggestion (7.6) is shown as the default
+   next to every other quantization with size and fit, and the person
+   chooses (or `--yes` accepts the suggestion).
 2. Shows the file(s), sizes, the estimate, the fit, and the destination; asks
    unless `--yes`.
 3. Checks free disk space at the cache location (size + 5 % margin) before
    starting; refuses with the numbers if short.
 4. Downloads with a progress bar; multi-shard files are all fetched; an
    `mmproj` file is fetched for vision models.
-5. Writes a preset section (section 9) and reports the section name.
+5. Writes a preset section (section 9): context from the GGUF header and
+   this machine unless `--context` is given; sampling values by source
+   precedence (9.2); every `--set KEY=VALUE` written as-is, last wins.
+   Reports the section name.
 6. If the router is running, calls `GET /models?reload=1` so the new model is
    available without a restart; otherwise says `local-llm up`.
 
@@ -259,7 +271,9 @@ question takes its default; a step whose default is "stop" still stops.
    unified memory → 38 GB usable for models (10 GB reserved)`. Offer to change
    the reserve.
 6. **Models.** Show recommendations (section 7) grouped by use case with
-   fit; allow multi-select by number, `s` to search by text, or `n` to skip.
+   fit; allow multi-select by number (each pick then offers its
+   quantizations with the suggestion as default), `s` to search by text, or
+   `n` to skip.
    Already-configured models are shown as such and not re-downloaded.
 7. **Download and configure.** For each choice: disk check, download with
    progress, write the section. Write `[*]` from the template if
@@ -306,107 +320,123 @@ rather than aborting.
 
 ## 7. Recommendations
 
-### 7.1 Catalog schema (`catalog.json`)
+### 7.1 Principle
 
-```json
-{
-  "version": 1,
-  "entries": [
-    {
-      "id": "qwen3-coder-30b-a3b",
-      "name": "Qwen3 Coder 30B-A3B Instruct",
-      "use": ["coding"],
-      "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
-      "why": "Best coding model that fits in 24 GB; mixture-of-experts so it runs fast.",
-      "min_params_b": 30,
-      "context": 65536,
-      "profile": "qwen3-instruct",
-      "vision": false
-    }
-  ]
-}
-```
+Nothing about specific models is hardcoded. `recommend` is computed, every
+time, from two inputs: this machine (section 6) and what the Hugging Face Hub
+says is popular and well-founded right now. The tool contains policies —
+how to tell a vendor release from a remix, which quantization is better than
+which, how much memory a context costs — but no list of models. The
+suggestion is a default the person can accept; they can always name the repo,
+the quantization, the file, the context and any flag themselves (4.6).
 
-`use` values: `coding`, `general`, `small`, `vision`. `profile` names a
-sampling profile (section 9.2). `context` is the `c` value written for the
-section. Entries carry no file names or sizes — those are always fetched live,
-so the catalog cannot lie about fit.
+### 7.2 Candidate discovery
 
-### 7.2 Initial entries
+Three listings, merged and de-duplicated by repo id, each through
+`HfApi.list_models` with `filter="gguf"`, `expand` covering tags, downloads,
+likes, pipeline tag, gated flag and the `gguf` summary (parameter count,
+context length, architecture):
 
-The version-1 catalog contains the models already in the author's
-`models.ini` and a small set of widely used families, one repo each from a
-trusted quantizer (`unsloth`, `ggml-org`, `bartowski`, `lmstudio-community`,
-or the model vendor):
+1. sorted by downloads, descending, 300 repos;
+2. sorted by trending score, 100 repos;
+3. `pipeline_tag="image-text-to-text"` sorted by downloads, 100 repos (vision).
 
-| id | use | repo | context | profile |
-|---|---|---|---|---|
-| qwen3-coder-30b-a3b | coding | unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF | 65536 | qwen3-instruct |
-| qwen3.8-27b | general, vision | unsloth/Qwen3.8-27B-GGUF | 65536 | qwen3.8 |
-| qwen3.6-35b-a3b | general | unsloth/Qwen3.6-35B-A3B-GGUF | 262144 | qwen3-thinking |
-| gemma-4-31b-it | general, vision | unsloth/gemma-4-31B-it-GGUF | 65536 | gemma |
-| qwen2.5-1.5b-instruct | small | Qwen/Qwen2.5-1.5B-Instruct-GGUF | 32768 | qwen2.5-small |
-| gpt-oss-20b | general | ggml-org/gpt-oss-20b-GGUF | 65536 | gpt-oss |
-| gpt-oss-120b | general | ggml-org/gpt-oss-120b-GGUF | 65536 | gpt-oss |
-| llama-3.3-70b-instruct | general | unsloth/Llama-3.3-70B-Instruct-GGUF | 32768 | llama3 |
-| qwen2.5-coder-7b-instruct | coding, small | Qwen/Qwen2.5-Coder-7B-Instruct-GGUF | 32768 | qwen2.5-small |
+Repos with no GGUF summary, or whose GGUF parameter count is unknown, are
+kept but ranked last. Gated repos are kept and marked (they need a token).
 
-A network-marked test (`tests/live/test_catalog.py`) checks that every repo
-exists, has at least one `.gguf`, and that the `profile` exists in
-`sampling.json`. Implementation may add or replace entries after checking the
-Hub, but every entry must pass that test before release. At runtime an entry
-whose repo cannot be resolved is hidden with one warning line.
+### 7.3 Lineage: vendor release or community derivative
 
-### 7.3 Choosing a quantization
+Every GGUF repo carries tags of the form `base_model:quantized:ORG/NAME`;
+that base model in turn may carry `base_model:finetune:…` or
+`base_model:merge:…` tags. The tool follows that chain (at most three steps,
+each a cached `model_info` call). A model is a **vendor release** when every
+fine-tune or merge step stays inside one organization (Qwen fine-tuning Qwen,
+Google releasing Gemma); it is a **community derivative** when the chain
+crosses organizations (someone else's "uncensored" merge of Qwen). A chain
+that cannot be resolved (missing tags, private base) is **unknown**.
 
-Quantization is the precision the weights are stored at; lower means smaller
-and slightly less accurate. Files are matched case-insensitively on the
-quantization token in the file name (`…-UD-Q4_K_XL.gguf`,
-`…-q4_k_m.gguf`). Multi-shard files (`…-00001-of-00003.gguf`) are grouped
-and their sizes summed; the section's `model =` points at shard 1.
+`recommend` shows vendor releases and unknowns; derivatives appear only with
+`--include-finetunes`. `search` shows everything, with the lineage in a column.
 
-Preference order, first that *fits* the budget wins:
+### 7.4 One entry per model
 
-`UD-Q4_K_XL`, `Q4_K_XL`, `Q4_K_M`, `Q4_K_S`, `IQ4_XS`, `UD-Q3_K_XL`, `Q3_K_M`,
-`IQ3_XXS`, `UD-IQ2_M`, `IQ2_M`.
+Several quantizer repos usually carry the same base model (unsloth,
+bartowski, lmstudio-community, the vendor itself). Candidates are grouped by
+their base model; the most-downloaded GGUF repo represents the group, and
+the others are listed under "also from" so the person can pick a different
+quantizer explicitly.
 
-Higher precisions (`Q5_K_M`, `Q6_K`, `Q8_0`, `BF16`) are never chosen
-automatically; they are listed by `--all-sizes` and selectable with `--quant`.
-The Q4 class is the standard choice on Apple Silicon and matches the author's
-existing configuration.
+### 7.5 Use-case groups, decided from data
 
-Vision models: the `mmproj` file (the vision projector, needed for images) is
-chosen in the order `mmproj-F16.gguf`, `mmproj-BF16.gguf`, any `mmproj*.gguf`,
-and its size is included in the estimate.
+- **vision**: the repo contains an `mmproj*.gguf` file, or its pipeline tag is
+  `image-text-to-text`.
+- **coding**: the base model's name contains `coder`, `code`, or `devstral`
+  (case-insensitive). This is a word list about a category, not a model list.
+- **small**: fewer than 5 billion parameters.
+- **general**: everything else. A model whose chat template contains
+  `<think>` or `enable_thinking` is marked *thinking* inside its group.
 
-### 7.4 Estimate and fit
+A model can be in more than one group (a small coder appears in both).
 
-`estimate.for_files(sizes) = sum(sizes) × 1.15 + 1 GiB`. This is the rule from
-the existing script, measured on real loads (a 17.6 GB file settles near
-19.9 GB resident, a 1.1 GB file near 2.0 GB). It deliberately errs high.
+### 7.6 Choosing a quantization for this machine
 
-Fit against a budget `B`: `comfortable` when estimate ≤ 0.6 × B (leaves room
-for a second model and long contexts), `fits` when ≤ B, else `too_big`.
+Quantization is the precision the weights are stored at; higher is more
+accurate and larger. The tags are read from file names exactly as
+llama-server does (9.3). Files are grouped per tag; multi-shard files
+(`…-00001-of-00003.gguf`) are summed; the `mmproj` file (vision projector) is
+added to the total when present, preferring `mmproj-F16.gguf`, then
+`mmproj-BF16.gguf`, then any `mmproj*.gguf`.
 
-### 7.5 Ranking
+Quality order, best first (unsloth's `UD-` builds rank above the plain
+build of the same level):
 
-Within each use case: comfortable before fits; then catalog order. Too-big
-entries are shown only with `--all-sizes`, with the smallest quantization that
-would fit, or "no quantization fits" when none does.
+`Q8_0`, `UD-Q6_K_XL`, `Q6_K`, `UD-Q5_K_XL`, `Q5_K_M`, `UD-Q4_K_XL`, `Q4_K_XL`,
+`Q4_K_M`, `Q4_K_S`, `IQ4_XS`, `UD-Q3_K_XL`, `Q3_K_M`, `IQ3_XXS`, `UD-IQ2_M`, `IQ2_M`.
 
-### 7.6 Caching
+The suggestion is the first tag in that order whose estimate (7.7) is
+*comfortable* on this machine; if none is, the first that *fits*; if none
+fits, the smallest, marked too big. `BF16`/`F16` and tags not in the list are
+never suggested but always selectable. A repo whose files carry only unknown
+tags (for example gpt-oss's `MXFP4`) gets the largest file that fits
+comfortably, else the largest that fits.
 
-Hub answers used for recommendations (file lists with sizes, metadata) are
-cached in `STATE/hub-cache.json` for 24 hours so `recommend` is instant on a
-second run. `--refresh` bypasses it. Offline with a warm cache works; offline
-with a cold cache prints one clear error.
+Every pick shows all tags with size and fit so the person can choose any,
+and a too-big choice is allowed after an explicit confirmation that names the
+shortfall.
+
+### 7.7 Estimate and fit
+
+`estimate.for_files(sizes) = sum(sizes) × 1.15 + 1 GiB` is the rule measured
+on real loads and used wherever the KV cost is unknown. When the model file
+is local (after download, or for `load`), the estimate is refined with the
+KV cache from the GGUF header (9.3): `sum(sizes) × 1.15 + 1 GiB + kv(c)`.
+
+Fit against a budget `B`: `comfortable` when estimate ≤ 0.6 × B, `fits` when
+≤ B, else `too_big`.
+
+### 7.8 Ranking and display
+
+Within each group: comfortable before fits; then larger parameter count
+first (the biggest model this machine runs well); then downloads. The top
+three per group are shown (`--limit N` for more), with the suggested tag, size
+on disk, estimated memory, fit, lineage, thinking/vision marks, and "already
+downloaded" when the file is in the cache. `--json` prints the full ranked
+data.
+
+### 7.9 Caching
+
+Listings, file lists and lineage answers are cached in `STATE/hub-cache.json`
+for 24 hours; `--refresh` bypasses the cache. Offline with a warm cache works;
+offline with a cold cache prints one clear error naming the cache file.
 
 ## 8. Search
 
-`hub.search(text, limit)` calls `HfApi.list_models(search=text, filter="gguf",
-sort="downloads", direction=-1, limit=limit)`. For the first 10 results it
-fetches file lists with sizes (`model_info(repo, files_metadata=True)`) and
-shows the quantizations with fit. It never downloads anything.
+`search TEXT` runs the same pipeline as `recommend` on
+`list_models(search=TEXT, filter="gguf", sort="downloads", direction=-1,
+limit=N)` (default 20), keeps every lineage, and for the first ten results
+fetches file lists so quantizations are shown with size and fit. It never
+downloads anything. A result row ends with the exact `pull` command that
+would fetch the suggested tag.
 
 ## 9. Preset generation
 
@@ -433,10 +463,26 @@ sleep-idle-seconds = 300
 An existing file is never rewritten wholesale; sections are appended or
 replaced individually.
 
-### 9.2 Sampling profiles (`sampling.json`)
+### 9.2 Sampling values
 
-Each profile is a set of keys written into a model's section, plus a `source`
-URL recording where the values came from. Version-1 profiles:
+Sources, first hit wins, and the section comment names which one applied:
+
+1. `preset.ini` in the repo root (llama.cpp's shareable preset format): the
+   keys of the section matching the model.
+2. The model card (`README.md` of the repo, then of the base model): the first
+   value found for each of `temperature`/`temp`, `top_p`, `top_k`, `min_p`,
+   `presence_penalty`, `repeat_penalty`/`repetition_penalty`, written as
+   `name = value`, `name: value`, or a markdown table row `| name | value |`,
+   case-insensitive, `_`, `-` or space between the words. Only values in a
+   plausible range are accepted (temperature 0–2, top_p and min_p 0–1, top_k
+   0–1000, penalties 0–3).
+3. The family table below (`sampling.json`), matched by repo name.
+4. Nothing (`--no-tuning`, or no source matched): the section carries only
+   `model`, `mmproj`, `c`, `n-predict`.
+
+`reasoning-format = deepseek` is written whenever the GGUF chat template has
+a think channel, whatever the sampling source. The family table, with a
+`source` URL per profile:
 
 | profile | keys | source |
 |---|---|---|
@@ -509,9 +555,16 @@ Rules:
   lower-cased. Must be unique; a clash (two files in one repo sharing a TAG,
   such as `UD-Q4_K_XL` and `Q4_K_XL`) is an error naming the existing section
   and suggesting `--name`.
-- `c`: `--context`, else the catalog `context`, else
-  `min(gguf.context_length, 65536)` for models of 8B parameters or more and
-  `min(gguf.context_length, 32768)` below that.
+- `c`: `--context`, else computed for this machine from the GGUF header:
+  the largest power of two, at least 4096 and at most the model's own
+  `context_length`, such that `weights × 1.15 + 1 GiB + kv(c)` fits the
+  budget (7.7). `kv(c) = attention_layers × 2 × kv_heads × head_size ×
+  bytes_per_element × c`, with `bytes_per_element` 1.0625 for `q8_0` and 2
+  for `f16`; `attention_layers` is `block_count / full_attention_interval`
+  when the header has that key (hybrid architectures such as `qwen35`), else
+  `block_count`. On the author's Mac this yields 65536 for Qwen3.8-27B and
+  262144 for Qwen3.6-35B-A3B — the values in use today. When the header
+  cannot be read, fall back to `min(context_length, 65536)`.
 - `n-predict`: `32768` when `c ≥ 65536`, else `4096`.
 - `cache-type-k` and `cache-type-v` = `q8_0` when the file total is 10 GB or
   more (the KV cache — the memory that grows with context — stored at 8-bit).
@@ -672,8 +725,11 @@ Four layers, from cheapest to most realistic.
 
 1. **Unit tests** (`pytest`, no network, run everywhere): preset round-trip
    with comments; estimate maths and fit thresholds; quantization matching
-   including shards and mmproj; sampling matching rules; catalog ranking
-   against fake sizes; hardware parsing from recorded `sysctl`,
+   including shards and mmproj; lineage rules against recorded tag sets;
+   use-case grouping; quantization suggestion per budget; ranking against
+   fake sizes; GGUF header parsing against a synthetic header and the KV
+   formula against the author's INI values; model-card parsing fixtures;
+   sampling source precedence; hardware parsing from recorded `sysctl`,
    `system_profiler`, `/proc/meminfo`, `/proc/cpuinfo`, `nvidia-smi` and
    `rocm-smi` output; router pid/child logic against a fake psutil; opencode
    merge rules; every CLI command through typer's `CliRunner` with the modules
@@ -698,7 +754,8 @@ Four layers, from cheapest to most realistic.
 4. **CI** (GitHub Actions): `ci.yml` runs `ruff` and the unit tests on
    `ubuntu-latest` and `macos-latest` on every push; `e2e.yml` runs the
    Docker end-to-end on `ubuntu-latest` on tags and on a weekly schedule, and
-   the live catalog test with network.
+   a live discovery test with network (the pipeline returns at least one
+   vendor-lineage model per use case).
 
 What Docker cannot cover: Metal (macOS) and real NVIDIA/AMD hardware. Metal is
 covered by layer 3; GPUs on Linux remain best effort until someone runs the
@@ -802,8 +859,9 @@ where it is. Copy, not move, because the file is still being written.
   router-controlled keys (host, port, api-key, alias) are never written.
 - Hugging Face API shape changes. Mitigation: all access through
   `huggingface_hub`, no hand-built URLs.
-- Catalog goes stale. Mitigation: sizes are always live; the live test runs
-  weekly; missing repos are hidden with a warning, never shown as available.
-- Sampling profile values drift from vendor advice. Mitigation: each profile
-  records its source; the section comment names the profile so a user can see
-  and change it; `--no-tuning` opts out entirely.
+- Hugging Face tag conventions (`base_model:*`) change or are missing.
+  Mitigation: lineage falls back to "unknown", which is shown rather than
+  hidden; the live test runs weekly.
+- Model-card parsing picks a wrong number. Mitigation: plausibility ranges,
+  the section comment names the source and the values, `--set` overrides any
+  key, `--no-tuning` opts out entirely.
