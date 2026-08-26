@@ -164,3 +164,15 @@ def test_search_keeps_every_lineage_and_fetches_files_only_for_the_first_n():
     assert results[1].suggested is None and results[1].fit == "unknown"
     remix = search(hub, MAC, None, text="Remix", limit=5)
     assert remix[0].lineage == "derivative"
+
+
+def test_non_text_pipelines_are_skipped():
+    from local_llm.discover import build_candidate
+
+    hub = make_hub()
+    speech = hub.api.models["handy/whisper-GGUF"] = fake_model(
+        "handy/whisper-GGUF", downloads=10, pipeline_tag="automatic-speech-recognition",
+        tags=["gguf"], gguf={"total": 1e9}, files=[("whisper-Q8_0.gguf", GIB)],
+    )
+    listing = hub.repo_meta(speech.id)
+    assert build_candidate(hub, MAC, None, [listing]) is None

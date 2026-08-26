@@ -11,6 +11,7 @@ from local_llm.hub import (
     Lineage,
     RepoListing,
     base_models_of,
+    extra_tokens,
     free_disk_bytes,
 )
 
@@ -115,9 +116,9 @@ def test_lineage_rules(tmp_path):
     heretic_lineage = Lineage("derivative", "DavidAU/Qwen3.6-27B-Heretic", "Qwen/Qwen3.6-27B")
     assert hub.lineage("DavidAU/Qwen3.6-27B-Heretic-GGUF") == heretic_lineage
     assert hub.lineage("someone/mystery-GGUF") == Lineage("unknown")
-    missing = fake_model("x/y-GGUF", tags=["base_model:quantized:gone/base"])
-    hub.api.models["x/y-GGUF"] = missing
-    assert hub.lineage("x/y-GGUF") == Lineage("unknown", "gone/base")
+    missing = fake_model("x/base-GGUF", tags=["base_model:quantized:gone/base"])
+    hub.api.models["x/base-GGUF"] = missing
+    assert hub.lineage("x/base-GGUF") == Lineage("unknown", "gone/base")
 
 
 def test_model_card_preset_ini_and_download(tmp_path):
@@ -169,3 +170,34 @@ def test_download_gated_message(tmp_path):
 def test_free_disk_bytes_walks_up_to_an_existing_parent(tmp_path):
     assert free_disk_bytes(tmp_path / "not" / "yet") > 0
     assert free_disk_bytes(Path(tmp_path)) > 0
+
+
+def test_lineage_name_rule_catches_modified_uploads_tagged_as_quantizations(tmp_path):
+    hub, _ = make_hub(tmp_path)
+    hub.api.models["Qwen/Qwen3.6-35B-A3B"] = fake_model("Qwen/Qwen3.6-35B-A3B")
+    hub.api.models["HauhauCS/Qwen3.6-35B-A3B-Uncensored-Aggressive"] = fake_model(
+        "HauhauCS/Qwen3.6-35B-A3B-Uncensored-Aggressive",
+        tags=["gguf", "base_model:quantized:Qwen/Qwen3.6-35B-A3B"],
+    )
+    assert hub.lineage("HauhauCS/Qwen3.6-35B-A3B-Uncensored-Aggressive") == Lineage(
+        "derivative", "Qwen/Qwen3.6-35B-A3B", "Qwen/Qwen3.6-35B-A3B"
+    )
+    hub.api.models["google/gemma-3-12b-it"] = fake_model("google/gemma-3-12b-it")
+    hub.api.models["bartowski/google_gemma-3-12b-it-GGUF"] = fake_model(
+        "bartowski/google_gemma-3-12b-it-GGUF",
+        tags=["gguf", "base_model:quantized:google/gemma-3-12b-it"],
+    )
+    assert hub.lineage("bartowski/google_gemma-3-12b-it-GGUF").kind == "vendor"
+    hub.api.models["mradermacher/Qwen3.6-35B-A3B-i1-GGUF"] = fake_model(
+        "mradermacher/Qwen3.6-35B-A3B-i1-GGUF",
+        tags=["gguf", "base_model:quantized:Qwen/Qwen3.6-35B-A3B"],
+    )
+    assert hub.lineage("mradermacher/Qwen3.6-35B-A3B-i1-GGUF").kind == "vendor"
+
+
+def test_extra_tokens_ignores_packaging_words():
+    assert extra_tokens("unsloth/Qwen3.8-27B-GGUF", "Qwen/Qwen3.8-27B") == set()
+    assert extra_tokens("TheBloke/Llama-2-7B-Chat-GGUF", "meta-llama/Llama-2-7b-chat-hf") == set()
+    heretic = extra_tokens("x/Qwen2.5-0.5B-Instruct-heretic", "Qwen/Qwen2.5-0.5B-Instruct")
+    assert heretic == {"heretic"}
+    assert extra_tokens("x/Model-Q4_K_M-imatrix-GGUF", "org/Model") == set()

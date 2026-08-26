@@ -16,6 +16,8 @@ CODING_WORDS = ("coder", "code", "devstral")
 SMALL_PARAMS = 5_000_000_000
 DEFAULT_BASES = 40  # distinct models examined per run; each costs a few Hub calls (cached a day)
 _FIT_ORDER = {"comfortable": 0, "fits": 1, "too_big": 2, "unknown": 3}
+# GGUF is also used for speech, embedding and image models; only chat-capable ones belong here.
+TEXT_PIPELINES = {None, "", "text-generation", "image-text-to-text", "text2text-generation"}
 
 
 @dataclass
@@ -93,6 +95,8 @@ def build_candidate(
     with_files: bool = True, skip_derivatives: bool = False,
 ) -> Candidate | None:
     listing = members[0]
+    if listing.pipeline_tag not in TEXT_PIPELINES:
+        return None
     try:
         lineage = hub.lineage(listing.repo_id, listing)
     except HubError:

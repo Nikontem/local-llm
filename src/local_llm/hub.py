@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import threading
 import time
@@ -159,6 +160,30 @@ def _tagged(tags: list[str], relation: str | None) -> list[str]:
     return found
 
 
+_NAME_SPLIT = re.compile(r"[-_.\s/]+")
+# Tokens that describe how a model was packaged, not what it is.
+_QUANT_VOCAB = {
+    "gguf", "imatrix", "i1", "ud", "bf16", "f16", "f32", "fp16", "fp32", "fp8", "mxfp4", "nvfp4",
+    "quantized", "quant", "quants", "hf", "llamacpp", "llama", "cpp", "repack",
+}
+_QUANT_TOKEN = re.compile(r"^(i?q\d\w*|iq\d\w*|\d+(bit|bpw|b|k)?|k|m|s|l|xl|xs|xxs)$")
+
+
+def name_tokens(name: str) -> set[str]:
+    return {token for token in _NAME_SPLIT.split(name.lower()) if token}
+
+
+def extra_tokens(repo_id: str, base_model: str) -> set[str]:
+    """Words in a repo's name that the base model's name does not explain.
+
+    A quantizer repeats the base name and adds packaging words (GGUF, imatrix,
+    a quantization tag). Anything else — "Uncensored", "Heretic", "Aggressive" —
+    means the weights were changed, however the uploader tagged the repo.
+    """
+    extra = name_tokens(repo_id.split("/")[-1]) - name_tokens(base_model)
+    return {t for t in extra if t not in _QUANT_VOCAB and not _QUANT_TOKEN.match(t)}
+
+
 def base_models_of(listing: RepoListing) -> list[str]:
     return (
         _tagged(listing.tags, "quantized")
@@ -282,6 +307,8 @@ class Hub:
         if not bases:
             return Lineage("unknown")
         base = bases[0]
+        if extra_tokens(repo_id, base):
+            return Lineage("derivative", base, base)
         org = base.split("/")[0].lower()
         current = base
         for _ in range(3):
