@@ -6,14 +6,19 @@ from local_llm.hardware import Machine, Probe, detect, total_ram
 
 def fake_run(outputs):
     def run(args, **kwargs):
-        return subprocess.CompletedProcess(args, 0, stdout=outputs.get(tuple(args[:2]), ""), stderr="")
+        stdout = outputs.get(tuple(args[:2]), "")
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
     return run
 
 
 def mac_probe():
+    displays = (
+        "Graphics/Displays:\n    Apple M4 Pro:\n      Chipset Model: Apple M4 Pro\n"
+        "      Total Number of Cores: 20\n"
+    )
     outputs = {
         ("sysctl", "-n"): "Apple M4 Pro\n",
-        ("system_profiler", "SPDisplaysDataType"): "Graphics/Displays:\n    Apple M4 Pro:\n      Chipset Model: Apple M4 Pro\n      Total Number of Cores: 20\n",
+        ("system_profiler", "SPDisplaysDataType"): displays,
     }
     return Probe(system="Darwin", machine="arm64", run=fake_run(outputs), which=lambda n: None,
                  read_text=lambda p: "", total_ram=lambda: 48 * GIB)
@@ -24,8 +29,12 @@ def test_apple_silicon_is_unified_memory():
     assert m.gpu_kind == "apple" and m.chip == "Apple M4 Pro" and m.gpu_cores == 20
     assert m.total_ram == 48 * GIB and m.gpu_vram == 48 * GIB
     assert m.budget == 38 * GIB and m.gpu_budget == 38 * GIB
-    assert m.describe() == "Apple M4 Pro, 20 GPU cores, 48 GB unified memory → 38 GB usable for models (10 GB reserved)"
-    assert m.fit(20 * GIB) == "comfortable" and m.fit_label(30 * GIB) == "fits" and m.fit_label(40 * GIB) == "too big"
+    assert m.describe() == (
+        "Apple M4 Pro, 20 GPU cores, 48 GB unified memory"
+        " → 38 GB usable for models (10 GB reserved)"
+    )
+    assert m.fit(20 * GIB) == "comfortable"
+    assert m.fit_label(30 * GIB) == "fits" and m.fit_label(40 * GIB) == "too big"
 
 
 def test_linux_with_nvidia():

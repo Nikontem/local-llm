@@ -15,7 +15,9 @@ import psutil
 from .estimate import GIB, budget_bytes, fit
 
 _TIMEOUT = 5
-_FIT_LABEL = {"comfortable": "comfortable", "fits": "fits", "too_big": "too big", "unknown": "unknown"}
+_FIT_LABEL = {
+    "comfortable": "comfortable", "fits": "fits", "too_big": "too big", "unknown": "unknown",
+}
 
 
 def total_ram() -> int:
@@ -110,9 +112,8 @@ def detect(reserve_gb: int = 10, probe: Probe | None = None) -> Machine:
         chip = _output(probe, ["sysctl", "-n", "machdep.cpu.brand_string"]).strip()
         if arch == "arm64":
             gpu_kind, vram = "apple", ram
-            found = re.search(
-                r"Total Number of Cores:\s*(\d+)", _output(probe, ["system_profiler", "SPDisplaysDataType"])
-            )
+            profiler = _output(probe, ["system_profiler", "SPDisplaysDataType"])
+            found = re.search(r"Total Number of Cores:\s*(\d+)", profiler)
             cores = int(found.group(1)) if found else 0
     elif system == "Linux":
         try:
@@ -122,7 +123,9 @@ def detect(reserve_gb: int = 10, probe: Probe | None = None) -> Machine:
         found = re.search(r"^model name\s*:\s*(.+)$", info, re.MULTILINE)
         chip = found.group(1).strip() if found else ""
         if probe.which("nvidia-smi"):
-            out = _output(probe, ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"])
+            out = _output(
+                probe, ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
+            )
             mib = [int(x) for x in re.findall(r"\d+", out)]
             if mib:
                 gpu_kind, vram = "nvidia", sum(mib) * 1024 * 1024
