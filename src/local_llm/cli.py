@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -21,11 +23,21 @@ from . import __version__
 from .agents import AgentError, claude_env, copilot_env, exec_with_env, export_lines, resolve_model
 from .discover import GROUPS, Candidate, gather
 from .discover import search as discover_search
-from .doctor import run_checks
+from .doctor import Check, Env, run_checks  # noqa: F401 - Check re-exported for tests
 from .estimate import budget_bytes, estimate_bytes, human_gb
 from .gguf import GgufError, read_header, refined_estimate
 from .hardware import Machine, detect, total_ram
 from .hub import Hub, HubCache, HubError, free_disk_bytes, hf_cache_dir
+from .integrations.opencode import (
+    agent_snippet,
+    current_tiny_model,
+    install_plugin,
+    merge_agent,
+    opencode_paths,
+    plugin_source,
+    plugin_status,
+    tiny_agent,
+)
 from .logs import current_log, prune_logs, tail_lines
 from .paths import Paths
 from .preset import Preset, PresetError
@@ -34,6 +46,16 @@ from .router import Router, RouterError
 from .sampling import values_for
 from .sections import build_section, local_name, section_name
 from .settings import load_settings
+from .setup import Io, SetupContext, run_setup, smallest_model
+from .shellrc import (
+    alias_lines,
+    detect_shell,
+    install_completion,
+    rc_file,
+    remove_block,
+    retire_old_source,
+    upsert_block,
+)
 
 app = typer.Typer(
     help="One llama.cpp router serving every model in models.ini.",
@@ -1052,3 +1074,170 @@ def remove(
                 err.print(f"  could not delete {file}: {error}")
     out.print("Removed.")
     _after_preset_change(st, model, added=False)
+
+
+# ---------------------------------------------------------------- integrations
+
+
+def _integrate_opencode(st: State, *, agent: bool, yes: bool) -> list[str]:
+    lines: list[str] = []
+    paths = opencode_paths()
+    status = plugin_status(paths)
+    if status == "same":
+        lines.append(f"plugin already installed: {paths.plugin}")
+    else:
+        if status == "different" and not yes:
+            diff = difflib.unified_diff(
+                paths.plugin.read_text().splitlines(), plugin_source().splitlines(),
+                fromfile=str(paths.plugin), tofile="shipped plugin", lineterm="",
+            )
+            out.print("\n".join(diff))
+            if not typer.confirm(f"Replace {paths.plugin} with the shipped plugin?", default=True):
+                lines.append("plugin left as it is")
+            else:
+                install_plugin(paths)
+                lines.append(f"plugin installed: {paths.plugin}")
+        else:
+            install_plugin(paths)
+            lines.append(f"plugin installed: {paths.plugin}")
+    if not agent:
+        return lines
+    preset = _preset_or_none(st)
+    model = smallest_model(preset) if preset else None
+    if not model:
+        lines.append("no model in models.ini yet, so the tiny helper agent was not added")
+        return lines
+    model_id = f"llamacpp/{model}"
+    target = paths.config_file or paths.new_config
+    text = target.read_text() if target.is_file() else ""
+    if current_tiny_model(text) == model_id:
+        lines.append(f"tiny agent already points at {model_id} in {target}")
+        return lines
+    merged = merge_agent(text, tiny_agent(model_id))
+    if merged is None:
+        lines.append(f"{target} has comments, so it is not rewritten. Paste this into it:")
+        lines.append(agent_snippet(tiny_agent(model_id)))
+        return lines
+    if yes or typer.confirm(f"Add the tiny helper agent ({model_id}) to {target}?", default=True):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(merged)
+        lines.append(f"tiny agent set to {model_id} in {target}")
+    return lines
+
+
+def _integrate_shell(st: State, shell: str, *, aliases: bool, yes: bool) -> list[str]:
+    lines: list[str] = []
+    completion_path = install_completion(shell)
+    lines.append(f"{shell} completion written to {completion_path}")
+    rc = rc_file(shell, Path.home())
+    text = rc.read_text() if rc.is_file() else ""
+    updated, retired = retire_old_source(text)
+    updated = upsert_block(updated, alias_lines(shell)) if aliases else remove_block(updated)
+    if updated != text:
+        if yes or typer.confirm(f"Update {rc}?", default=True):
+            rc.parent.mkdir(parents=True, exist_ok=True)
+            rc.write_text(updated)
+            if retired:
+                lines.append(f"retired {retired} old line(s) that sourced local_llm.zsh in {rc}")
+            added_or_removed = "added to" if aliases else "removed from"
+            lines.append(f"aliases local_llm, claude_local, copilot_local {added_or_removed} {rc}")
+    lines.append(f"open a new shell, or run:  source {rc}")
+    return lines
+
+
+integrate_app = typer.Typer(help="Wire other tools to the router.", rich_markup_mode=None)
+app.add_typer(integrate_app, name="integrate")
+
+
+@integrate_app.command("opencode")
+def integrate_opencode_cmd(
+    agent: bool = typer.Option(True, "--agent/--no-agent", help="Also add the tiny helper agent."),
+    yes: bool = typer.Option(False, "-y", "--yes", help="Do not ask."),
+) -> None:
+    """Install the opencode plugin that lists every model in models.ini."""
+    for line in _integrate_opencode(state(), agent=agent, yes=yes):
+        out.print(line)
+
+
+completion_app = typer.Typer(help="Shell completion and aliases.", rich_markup_mode=None)
+app.add_typer(completion_app, name="completion")
+
+
+@completion_app.command("install")
+def completion_install_cmd(
+    shell: str | None = typer.Option(
+        None, "--shell", help="zsh, bash or fish (default: detected)."
+    ),
+    aliases: bool = typer.Option(
+        True, "--aliases/--no-aliases", help="Add local_llm, claude_local, copilot_local."
+    ),
+    yes: bool = typer.Option(False, "-y", "--yes", help="Do not ask."),
+) -> None:
+    """Install shell completion, and the aliases from the old zsh setup."""
+    chosen = shell or detect_shell()
+    if chosen not in ("zsh", "bash", "fish"):
+        fail(f"--shell must be zsh, bash or fish, got {chosen!r}")
+    for line in _integrate_shell(state(), chosen, aliases=aliases, yes=yes):
+        out.print(line)
+
+
+# ---------------------------------------------------------------- setup
+
+
+@app.command()
+def setup(
+    yes: bool = typer.Option(False, "-y", "--yes", help="Take every default without asking."),
+    use: str | None = typer.Option(
+        None, "--use", help="Recommend only coding, general, small or vision."
+    ),
+    model: list[str] = typer.Option(  # noqa: B008 - typer needs the call as the default
+        [], "--model", help="org/repo[:QUANT] to download; repeatable."
+    ),
+) -> None:
+    """Guided first run: prerequisites, this machine, models, settings, integrations, start."""
+    st = state()
+    if use is not None and use not in GROUPS:
+        fail(f"--use must be one of: {', '.join(GROUPS)}")
+    hub = _make_hub(st)
+    io = Io(
+        say=out.print,
+        ask=lambda prompt, default: typer.prompt(prompt, default=default),
+        confirm=lambda prompt, default: typer.confirm(prompt, default=default),
+        run=lambda cmd: subprocess.call(cmd),
+        yes=yes,
+    )
+
+    def do_pull(machine: Machine, repo: str, option: QuantOption) -> str:
+        _pull(
+            st, hub, machine, repo, option,
+            name=None, context=None, extra=[], no_tuning=False, yes=True,
+        )
+        return section_name(repo, option.primary)
+
+    ctx = SetupContext(
+        paths=st.paths,
+        settings=st.settings,
+        io=io,
+        env=Env(),
+        hub=hub,
+        detect=lambda reserve: detect(reserve),
+        router=st.router,
+        which=shutil.which,
+        recommend=lambda machine, preset, use_: gather(
+            hub, machine, preset, limit_per_group=3,
+            on_progress=(
+                lambda repo: err.print(f"  looking at {repo}", end="\r")
+                if err.is_terminal else None
+            ),
+        ),
+        search=lambda machine, preset, text: discover_search(
+            hub, machine, preset, text=text, limit=10
+        ),
+        choose_quant=lambda options, suggested, machine: _choose_option(
+            options, suggested, machine, yes=yes
+        ),
+        pull=do_pull,
+        integrate_shell=lambda shell: _integrate_shell(st, shell, aliases=True, yes=True),
+        integrate_opencode=lambda: _integrate_opencode(st, agent=True, yes=True),
+    )
+    raise typer.Exit(run_setup(ctx, use=use, models=list(model)))
