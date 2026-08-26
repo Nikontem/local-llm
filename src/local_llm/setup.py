@@ -57,6 +57,7 @@ class SetupContext:
     pull: Callable[[Machine, str, QuantOption], str]
     integrate_shell: Callable[[str], list[str]]
     integrate_opencode: Callable[[], list[str]]
+    shell: str | None = None  # None: detect from the environment
 
 
 def load_preset(paths: Paths) -> Preset | None:
@@ -322,7 +323,7 @@ def step_integrations(ctx: SetupContext) -> None:
     _header(io, "6. Shell and coding agents")
     from .shellrc import detect_shell
 
-    shell = detect_shell()
+    shell = ctx.shell or detect_shell()
     if io.confirm_or_default(
         f"Install {shell} completion and the aliases local_llm, claude_local, copilot_local?", True
     ):
