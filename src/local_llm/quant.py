@@ -135,7 +135,7 @@ def quant_options(files: list[tuple[str, int]]) -> list[QuantOption]:
 
 
 def suggest(options: list[QuantOption], budget: int) -> tuple[QuantOption | None, str]:
-    """The best quantization that is comfortable here, else the best that fits, else the smallest."""
+    """The best quantization that is comfortable here, else the best that fits, else smallest."""
     known = [o for o in options if quality_rank(o.label) < len(QUALITY_ORDER)]
     if known:
         pool = sorted(known, key=lambda o: quality_rank(o.label))
