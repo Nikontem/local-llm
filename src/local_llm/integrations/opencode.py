@@ -27,7 +27,9 @@ def opencode_paths(home: Path | None = None, env: Mapping[str, str] | None = Non
     env = os.environ if env is None else env
     home = home or Path(env.get("HOME") or Path.home())
     config_dir = Path(env.get("OPENCODE_CONFIG_DIR") or home / ".config" / "opencode")
-    existing = next((config_dir / name for name in CONFIG_CANDIDATES if (config_dir / name).is_file()), None)
+    existing = next(
+        (config_dir / name for name in CONFIG_CANDIDATES if (config_dir / name).is_file()), None
+    )
     return OpencodePaths(
         config_dir=config_dir,
         plugin=config_dir / "plugins" / PLUGIN_NAME,
@@ -56,7 +58,8 @@ def tiny_agent(model_id: str) -> dict:
     return {
         "description": (
             "Cheap local helper for mechanical text work: summarising, renaming, reformatting,"
-            " extracting a value. Use it for anything that does not need reasoning about the codebase."
+            " extracting a value. Use it for anything that does not need reasoning about the"
+            " codebase."
         ),
         "mode": "subagent",
         "model": model_id,
