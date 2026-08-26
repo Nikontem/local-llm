@@ -10,6 +10,7 @@ import sys
 import time
 import webbrowser
 from dataclasses import asdict
+from importlib import resources
 from pathlib import Path
 from typing import NoReturn
 
@@ -266,10 +267,22 @@ def status() -> None:
     out.print(f"  config:   {st.paths.preset}")
     out.print()
     kids = router.children()
+    statuses: dict[str, str] = {}
+    try:
+        for entry in router.list_models().get("data", []):
+            statuses[str(entry.get("id"))] = str((entry.get("status") or {}).get("value", ""))
+    except RouterError:
+        pass
     if kids:
         out.print("  loaded models:")
         for kid in kids:
-            note = "  (asleep)" if kid.asleep else ""
+            value = statuses.get(kid.model or "")
+            if value == "loading":
+                note = "  (loading)"
+            elif value == "sleeping" or (value is None and kid.asleep):
+                note = "  (asleep)"
+            else:
+                note = ""
             out.print(f"    {kid.model or '?':<32} pid {kid.pid}  {human_gb(kid.rss)}{note}")
     else:
         out.print("  loaded models:  none resident")
@@ -424,11 +437,26 @@ def load(
     total = 0
     for name in models:
         try:
-            estimate = estimate_bytes(preset.file_sizes(name))
+            sizes = preset.file_sizes(name)
         except PresetError as error:
             fail(f"  {name} - cannot find its model file, refusing to guess\n  {error}")
+        header = None
+        try:
+            header = read_header(Path(preset.get(name, "model", fallback_to_star=False) or ""))
+        except GgufError:
+            header = None
+        context = int(preset.get(name, "c") or preset.get(name, "ctx-size") or 0)
+        if header is not None and context <= 0:
+            context = header.context_length
+        cache_type = preset.get(name, "cache-type-k") or "f16"
+        if header is not None and context > 0:
+            estimate = refined_estimate(sizes, header, context, cache_type)
+            detail = f"weights + KV cache at c={context}"
+        else:
+            estimate = estimate_bytes(sizes)
+            detail = "weights plus headroom"
         total += estimate
-        out.print(f"  {name}  ~{human_gb(estimate)}")
+        out.print(f"  {name}  ~{human_gb(estimate)}  ({detail})")
     out.print()
     out.print(f"  estimated total:  {human_gb(total)}")
     if budget > 0:
@@ -608,7 +636,9 @@ def _state_note(candidate: Candidate) -> str:
 def _candidate_line(candidate: Candidate, machine: Machine) -> str:
     option = candidate.suggested
     if option is None:
-        return f"{candidate.display_name}{_marks(candidate)}  {candidate.repo_id}  (no files listed)"
+        return (
+            f"{candidate.display_name}{_marks(candidate)}  {candidate.repo_id}  (no files listed)"
+        )
     return (
         f"{candidate.display_name}{_marks(candidate)}  {candidate.repo_id}  {option.label}"
         f"  {human_gb(option.total)} on disk, ~{human_gb(candidate.estimate)} in memory"
@@ -708,7 +738,8 @@ def recommend(
         fail(str(error))
     wanted = [use] if use else list(GROUPS)
     if json_out:
-        out.print(json.dumps({g: [_candidate_json(c) for c in groups[g]] for g in wanted}, indent=2))
+        data = {g: [_candidate_json(c) for c in groups[g]] for g in wanted}
+        out.print(json.dumps(data, indent=2))
         return
     out.print(machine.describe())
     out.print()
@@ -751,7 +782,9 @@ def search(
     machine = _machine(st)
     hub = _make_hub(st)
     try:
-        results = discover_search(hub, machine, _preset_or_none(st), text=text, limit=limit, author=author)
+        results = discover_search(
+            hub, machine, _preset_or_none(st), text=text, limit=limit, author=author
+        )
     except HubError as error:
         fail(str(error))
     if json_out:
@@ -767,11 +800,253 @@ def search(
         )
         for option in candidate.options:
             estimate = estimate_bytes([option.total])
-            out.print(f"    {option.label:<12} {human_gb(option.total):>9}  ~{human_gb(estimate):>9}  {machine.fit_label(estimate)}")
+            out.print(
+                f"    {option.label:<12} {human_gb(option.total):>9}"
+                f"  ~{human_gb(estimate):>9}  {machine.fit_label(estimate)}"
+            )
         if candidate.suggested is not None:
             out.print(f"    local-llm pull {candidate.repo_id}:{candidate.suggested.label}")
         out.print()
 
 
-def _pull(*args, **kwargs):  # placeholder; replaced by Task 9
-    raise NotImplementedError
+# ---------------------------------------------------------------- pull, add, remove
+
+
+def template_text() -> str:
+    return resources.files("local_llm").joinpath("resources/models.template.ini").read_text()
+
+
+def _preset_or_new(st: State) -> Preset:
+    try:
+        return Preset.load(st.paths.preset)
+    except PresetError:
+        return Preset.parse(template_text())
+
+
+def _split_repo(text: str) -> tuple[str, str | None]:
+    repo, _, tag = text.partition(":")
+    if repo.count("/") != 1 or not all(repo.split("/")):
+        fail(
+            f"{text!r} is not a repository id. Expected org/repo or org/repo:QUANT, for"
+            " example unsloth/Qwen3.8-27B-GGUF:Q4_K_XL"
+        )
+    return repo, (tag or None)
+
+
+def _parse_sets(values: list[str]) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for item in values:
+        key, sep, value = item.partition("=")
+        if not sep or not key.strip():
+            fail(f"--set expects KEY=VALUE, got {item!r}")
+        pairs.append((key.strip(), value.strip()))
+    return pairs
+
+
+def _after_preset_change(st: State, section: str) -> None:
+    router = st.router()
+    if router.pid() is None:
+        out.print("  local-llm up    to start serving it")
+        return
+    try:
+        router.list_models(reload=True)
+        out.print("  available now: the router reloaded its model list")
+        out.print(
+            f"  local-llm load {shlex.quote(section)}    to load it ahead of the first request"
+        )
+    except RouterError:
+        out.print("  local-llm restart    so the running router sees it")
+
+
+def _pull(
+    st: State, hub: Hub, machine: Machine, repo_id: str, option: QuantOption, *,
+    name: str | None, context: int | None, extra: list[tuple[str, str]], no_tuning: bool, yes: bool,
+) -> None:
+    preset = _preset_or_new(st)
+    section = name or section_name(repo_id, option.primary)
+    if preset.has_section(section):
+        fail(
+            f"Section [{section}] already exists in {st.paths.preset}.\n"
+            f"  local-llm remove {shlex.quote(section)}    to replace it, or --name <other>"
+        )
+    files = list(option.files) + ([option.mmproj] if option.mmproj else [])
+    estimate = estimate_bytes([option.total])
+    out.print(f"{repo_id}  {option.label}")
+    for file in files:
+        out.print(f"  {file}")
+    out.print(f"  size on disk:    {human_gb(option.total)}")
+    out.print(
+        f"  estimated need:  {human_gb(estimate)}  ({machine.fit_label(estimate)};"
+        f" {human_gb(machine.budget)} usable here)"
+    )
+    out.print(f"  section name:    {section}")
+    cache_dir = hf_cache_dir()
+    needed = option.total * 105 // 100
+    free = free_disk_bytes(cache_dir)
+    if free < needed:
+        fail(
+            f"Not enough disk space in {cache_dir}: need {human_gb(needed)}, {human_gb(free)} free."
+        )
+    if not yes and not typer.confirm("Download and add it?", default=True):
+        raise typer.Exit(1)
+    try:
+        paths = hub.download(repo_id, files, progress=lambda file: out.print(f"downloading {file}"))
+    except HubError as error:
+        fail(str(error))
+    model_path = paths[0]
+    mmproj_path = paths[len(option.files)] if option.mmproj else None
+    header = None
+    try:
+        header = read_header(model_path)
+    except GgufError as error:
+        err.print(f"  could not read the GGUF header ({error}); using a default context")
+    sampling = values_for(
+        repo_id, preset_ini=hub.preset_ini(repo_id), card=hub.model_card(repo_id),
+        no_tuning=no_tuning,
+    )
+    plan = build_section(
+        name=section, model_path=model_path, mmproj_path=mmproj_path, total_bytes=option.total,
+        header=header, machine=machine, sampling=sampling, context=context, extra=extra,
+        no_tuning=no_tuning, origin=f"{repo_id} ({option.label}, {human_gb(option.size)})",
+    )
+    preset.add_section(plan.name, plan.keys, plan.comments)
+    preset.save(st.paths.preset)
+    out.print()
+    out.print(f"Added [{plan.name}] to {st.paths.preset}")
+    for comment in plan.comments[1:]:
+        out.print(f"  {comment}")
+    _after_preset_change(st, plan.name)
+
+
+@app.command()
+def pull(
+    repo: str = typer.Argument(..., help="org/repo or org/repo:QUANT from huggingface.co"),
+    quant: str | None = typer.Option(None, "--quant", help="Quantization label, e.g. UD-Q4_K_XL."),
+    file: str | None = typer.Option(
+        None, "--file", help="Exact file name when tags are ambiguous."
+    ),
+    name: str | None = typer.Option(
+        None, "--name", help="Section name (default: the id llama-server uses)."
+    ),
+    context: int | None = typer.Option(
+        None, "--context", help="Context length; default is computed for this machine."
+    ),
+    set_: list[str] = typer.Option(  # noqa: B008 - typer needs the call as the default
+        [], "--set", help="KEY=VALUE written into the section; repeatable."
+    ),
+    no_tuning: bool = typer.Option(
+        False, "--no-tuning", help="Only model, mmproj, c and n-predict."
+    ),
+    yes: bool = typer.Option(False, "-y", "--yes", help="Accept the suggestion and do not ask."),
+) -> None:
+    """Download a model from Hugging Face and add a tuned section to models.ini."""
+    st = state()
+    repo_id, tag = _split_repo(repo)
+    quant = quant or tag
+    extra = _parse_sets(set_)
+    machine = _machine(st)
+    hub = _make_hub(st)
+    try:
+        files = hub.repo_files(repo_id)
+    except HubError as error:
+        fail(str(error))
+    options = quant_options(files.files)
+    if not options:
+        fail(
+            f"{repo_id} has no GGUF model files.\n"
+            f"  local-llm search {shlex.quote(repo_id.split('/')[-1])}    to find a GGUF build"
+        )
+    try:
+        if quant or file:
+            option = find_option(options, quant=quant, file=file)
+        else:
+            suggested, _ = suggest(options, machine.budget)
+            option = _choose_option(options, suggested, machine, yes=yes)
+    except QuantError as error:
+        fail(str(error))
+    _pull(st, hub, machine, repo_id, option, name=name, context=context, extra=extra,
+          no_tuning=no_tuning, yes=yes)
+
+
+@app.command()
+def add(
+    path: Path = typer.Argument(  # noqa: B008 - typer needs the call as the default
+        ..., exists=True, dir_okay=False, help="A .gguf file on this machine."
+    ),
+    mmproj: Path | None = typer.Option(  # noqa: B008 - typer needs the call as the default
+        None, "--mmproj", exists=True, dir_okay=False, help="Vision projector file."
+    ),
+    name: str | None = typer.Option(None, "--name", help="Section name (default: the file name)."),
+    context: int | None = typer.Option(None, "--context"),
+    set_: list[str] = typer.Option(  # noqa: B008 - typer needs the call as the default
+        [], "--set", help="KEY=VALUE written into the section; repeatable."
+    ),
+    no_tuning: bool = typer.Option(False, "--no-tuning"),
+) -> None:
+    """Add a GGUF file you already have to models.ini."""
+    st = state()
+    machine = _machine(st)
+    preset = _preset_or_new(st)
+    section = name or local_name(path)
+    if preset.has_section(section):
+        fail(f"Section [{section}] already exists in {st.paths.preset}. Use --name <other>.")
+    total = path.stat().st_size + (mmproj.stat().st_size if mmproj else 0)
+    header = None
+    try:
+        header = read_header(path)
+    except GgufError as error:
+        err.print(f"  could not read the GGUF header ({error}); using a default context")
+    sampling = values_for(local_name(path), card="", no_tuning=no_tuning)
+    plan = build_section(
+        name=section, model_path=path.resolve(), mmproj_path=mmproj.resolve() if mmproj else None,
+        total_bytes=total, header=header, machine=machine, sampling=sampling, context=context,
+        extra=_parse_sets(set_), no_tuning=no_tuning, origin=str(path),
+    )
+    preset.add_section(plan.name, plan.keys, plan.comments)
+    preset.save(st.paths.preset)
+    out.print(f"Added [{plan.name}] to {st.paths.preset}")
+    for comment in plan.comments[1:]:
+        out.print(f"  {comment}")
+    _after_preset_change(st, plan.name)
+
+
+def _delete_model_file(path: Path) -> None:
+    """Delete a model file; a Hugging Face cache entry is a symlink, so delete its blob too."""
+    target = path.resolve() if path.is_symlink() else None
+    path.unlink(missing_ok=True)
+    if target is not None and target.exists():
+        target.unlink()
+
+
+@app.command()
+def remove(
+    model: str = typer.Argument(..., autocompletion=complete_model),
+    delete_files: bool = typer.Option(False, "--delete-files", help="Also delete the model files."),
+    yes: bool = typer.Option(False, "-y", "--yes"),
+) -> None:
+    """Remove a section from models.ini, optionally deleting its files."""
+    st = state()
+    preset = st.preset()
+    if not preset.has_section(model):
+        fail(f"Unknown model: {model}\n  local-llm models    to see what is available")
+    files = [
+        Path(value) for key in ("model", "mmproj")
+        if (value := preset.get(model, key, fallback_to_star=False))
+    ]
+    out.print(f"Removing [{model}] from {st.paths.preset}")
+    if delete_files:
+        for file in files:
+            gone = "" if file.exists() or file.is_symlink() else "  (already gone)"
+            out.print(f"  delete {file}{gone}")
+    if not yes and not typer.confirm("Continue?", default=False):
+        raise typer.Exit(1)
+    preset.remove_section(model)
+    preset.save(st.paths.preset)
+    if delete_files:
+        for file in files:
+            try:
+                _delete_model_file(file)
+            except OSError as error:
+                err.print(f"  could not delete {file}: {error}")
+    out.print("Removed.")
+    _after_preset_change(st, model)
