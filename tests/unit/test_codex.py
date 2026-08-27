@@ -403,3 +403,15 @@ def test_a_config_left_holding_only_a_comment_stays(tmp_path):
     codex.removal_lines(paths)
 
     assert paths.config_file.is_file() and "# my own notes" in paths.config_file.read_text()
+
+
+def test_a_caller_that_has_already_warned_is_not_repeated(tmp_path):
+    """The menu says a fuller version before asking, so each agent it then configures
+    would otherwise add a paragraph of the same thing to the same screen."""
+    from local_llm.integrations import codex
+
+    ctx = make_ctx(tmp_path)
+    ctx.settings = Settings(host="192.168.1.40")
+    ctx.warned_remote = True
+
+    assert not any("loopback" in line for line in codex.configure(ctx))

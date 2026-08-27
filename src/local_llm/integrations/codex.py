@@ -243,7 +243,7 @@ def configure(ctx: HarnessContext) -> list[str]:
     The remote note is added here rather than at each way out, so no path this
     function grows later can be the one that forgets it.
     """
-    return _configure(ctx) + remote_note(ctx.settings)
+    return _configure(ctx) + remote_note(ctx)
 
 
 def _configure(ctx: HarnessContext) -> list[str]:

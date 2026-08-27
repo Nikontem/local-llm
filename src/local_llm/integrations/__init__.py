@@ -69,23 +69,6 @@ def atomic_write(target: Path, text: str, *, backup: bool = True) -> None:
             os.unlink(temporary)
 
 
-def remote_note(settings: Settings) -> list[str]:
-    """What every write into another tool's config owes a person when the router is remote.
-
-    Configuring an agent copies the router's address into a file on this machine, and
-    the address the tool hands out is always plain http. With a host that is not this
-    machine, that means the agent's prompts and the code it sends travel the network
-    in the clear, which nothing else in the output would tell them.
-    """
-    if settings.is_local:
-        return []
-    return [
-        f"note: {settings.host} is not a loopback address, and the base URL is plain"
-        " http, so this agent's prompts and the code it sends cross your network"
-        " unencrypted - and anything that can read its config file can see the address"
-    ]
-
-
 def _no_questions(prompt: str, default: bool) -> bool:
     """The default answer, used when nobody wired a real prompt."""
     return default
@@ -101,7 +84,30 @@ class HarnessContext:
     say: Callable[[str], None] = print
     confirm: Callable[[str, bool], bool] = _no_questions
     yes: bool = False
+    #: Set by a caller that has already said the remote-address warning itself. The
+    #: menu says a fuller version of it before asking which agents to configure, so
+    #: repeating it once per agent afterwards would be several paragraphs of the same
+    #: thing. A command run on its own has said nothing, and leaves this alone.
+    warned_remote: bool = False
 
     def ask(self, prompt: str, default: bool = True) -> bool:
         """In yes-mode every question takes its default without being asked."""
         return default if self.yes else self.confirm(prompt, default)
+
+
+def remote_note(ctx: HarnessContext) -> list[str]:
+    """What a write into another tool's config owes a person when the router is remote.
+
+    Configuring an agent copies the router's address into a file on this machine, and
+    the address the tool hands out is always plain http. With a host that is not this
+    machine, that means the agent's prompts and the code it sends travel the network
+    in the clear, which nothing else in the output would tell them. Said here so that
+    a command run on its own says it too, and not only the menu.
+    """
+    if ctx.settings.is_local or ctx.warned_remote:
+        return []
+    return [
+        f"note: {ctx.settings.host} is not a loopback address, and the base URL is plain"
+        " http, so this agent's prompts and the code it sends cross your network"
+        " unencrypted - and anything that can read its config file can see the address"
+    ]

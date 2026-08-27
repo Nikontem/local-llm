@@ -337,6 +337,14 @@ already in the block is never removed by a later run, only by
 `local-llm uninstall`. Model names complete from `models.ini` even when the
 router is down.
 
+The aliases go inside a marked block in your shell startup file, and only
+there. If your file already defines an alias of the same name outside that
+block, the tool says so and tells you which of the two your shell will
+actually use — whichever it reads last. A startup file whose markers do not
+pair up, or that is not saved as UTF-8, is left completely alone and named:
+shell completion is not installed into it either, because the installer would
+append to the same file.
+
 `MODEL` defaults to `default_model` from settings; naming one that is not in
 `models.ini` is refused with the list of what is available.
 
@@ -425,7 +433,7 @@ a time, and lists every path before deleting it:
 ```
 $ local-llm uninstall
   1. models        5 model(s), 73.0 GB on disk
-  2. integrations  opencode plugin, opencode tiny agent, shell aliases, completion, Codex provider and profile
+  2. integrations  opencode plugin, opencode tiny agent, shell aliases, completion, Codex provider and profile, the backup copies we made
   3. state         state and logs, settings.toml
   4. config        models.ini, models.ini.bak
   5. everything
@@ -437,7 +445,10 @@ and their files (cache symlink and blob) are deleted. `--models`,
 `--integrations`, `--state`, `--config` and `--all` select without the menu,
 `--yes` skips the questions, `--dry-run` only prints the plan.
 `--restore-shell-line` puts back a `source …/local_llm.zsh` line that
-`completion install` had commented out. The config directory is removed only
+`completion install` had commented out. The `integrations` category also takes
+away the `.local-llm.bak` copies this tool made before editing any of those
+files: nothing else ever writes a file by that name, and one left behind
+beside an opencode config is a second copy of whatever API keys are in it. The config directory is removed only
 if nothing else is left in it. The tool cannot delete itself while running,
 so the last line prints the command for that (`uv tool uninstall local-llm`
 for the standard install).

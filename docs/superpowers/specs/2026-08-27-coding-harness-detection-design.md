@@ -135,6 +135,14 @@ and what the flag already defaults to. Anyone who wants the plugin without the
 helper agent runs `local-llm integrate opencode --no-agent`, which keeps
 working.
 
+A `tiny` agent is only ours to write over or take away when the model it names
+begins with `llamacpp/`, the prefix under which the plugin registers every
+model the router serves. Anything else — an agent the person set up themselves,
+very possibly on a model they pay for — belongs to them. `configure` refuses to
+replace one, and with `--yes`, where nothing can be asked, it does not even
+offer to; uninstall refuses to delete one. Both report one line naming the
+model instead, so the refusal is never silent.
+
 ## 5. Detection paths
 
 `codex_paths(home=None, env=None)` follows the signature convention every
@@ -359,6 +367,21 @@ it empty and it carries no comments of the person's own; write atomically with
 a backup. If a top-level `profile = "local-llm"` line is ever written by a
 future version, remove that too.
 
+If taking our tables out leaves nothing at all — no setting of theirs, not
+even a comment — the file itself was ours: it did not exist before `configure`
+wrote it, and a zero-byte `~/.codex/config.toml` left behind is not the
+machine put back the way it was found. So the file is deleted rather than
+written empty. The one exception is a config that is a symbolic link into a
+dotfiles repository, where deleting the link would break an arrangement the
+person made on purpose; there the emptied file is written through the link as
+usual.
+
+The opencode side follows the same rule for the part it owns. Uninstall
+removes the `tiny` helper agent only when it is ours by the test in section 4,
+writes the change atomically with a backup like every other write into a
+foreign file, and leaves a config that is not valid UTF-8 alone with one line
+saying so rather than failing the whole run.
+
 Two deliberate positions:
 
 - If the person edited our tables after we wrote them, uninstall removes them
@@ -402,8 +425,16 @@ this feature needs.
 - Every failure inside the menu loop is one printed line; the loop continues.
 - When the router's host is not a loopback address, a provider integration
   writes that address into another tool's configuration file, which is a
-  wider exposure than a launcher's per-session environment. The menu prints
-  one line saying so when `allow_remote` is on, so the choice is visible.
+  wider exposure than a launcher's per-session environment. It is said once,
+  and by whichever part of the tool is in a position to say it first. The
+  menu prints one line before asking which agents to configure, so the choice
+  can be made knowing it, and it tells each agent it then configures that the
+  warning has already been given. A provider configured on its own, by
+  `local-llm integrate codex` or `local-llm integrate opencode`, is told
+  nothing by any menu, so its own `configure` prints the line instead. Either
+  way the person hears it exactly once, and the line says that the base
+  address is always plain `http`: with a host that is not this machine, the
+  agent's prompts and the code it sends cross the network unencrypted.
 
 ## 12. What the informational entries say
 

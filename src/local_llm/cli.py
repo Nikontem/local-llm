@@ -638,7 +638,11 @@ def env(
     ),
     shell: str = typer.Option("zsh", "--shell", help="zsh, bash or fish."),
 ) -> None:
-    """Print export lines that point any OpenAI- or Anthropic-style tool at the router."""
+    """Print export lines that point any OpenAI- or Anthropic-style tool at the router.
+
+    Feed them to your shell with eval. Where an API key is set, the lines name the
+    variable holding it rather than its value, so nothing printed here is the key.
+    """
     st = state()
     preset = st.preset()
     try:
@@ -1139,7 +1143,9 @@ def remove(
 # ---------------------------------------------------------------- integrations
 
 
-def _harness_context(st: State, *, yes: bool, io: Io | None = None) -> HarnessContext:
+def _harness_context(
+    st: State, *, yes: bool, io: Io | None = None, warned_remote: bool = False
+) -> HarnessContext:
     """Inside the wizard every question goes through its Io; elsewhere, through typer."""
     return HarnessContext(
         paths=st.paths,
@@ -1154,6 +1160,7 @@ def _harness_context(st: State, *, yes: bool, io: Io | None = None) -> HarnessCo
             else io.confirm
         ),
         yes=yes if io is None else (io.yes or yes),
+        warned_remote=warned_remote,
     )
 
 
@@ -1320,7 +1327,9 @@ def integrate_menu(ctx: typer.Context, yes: bool = typer.Option(
         return
     st = state()
     installed, missing = harnesses.detect(_which)
-    context = _harness_context(st, yes=yes)
+    # The menu below prints the remote-address warning itself, whenever there is
+    # anything to configure, so each chosen agent does not repeat it afterwards.
+    context = _harness_context(st, yes=yes, warned_remote=not st.settings.is_local)
 
     def status_of(harness: harnesses.Harness) -> str:
         return harness.status(context) if harness.status else "missing"
@@ -1484,7 +1493,11 @@ def setup(
             harness.status(_harness_context(st, yes=yes, io=io)) if harness.status else "missing"
         ),
         configure_harness=lambda harness: (
-            harness.configure(_harness_context(st, yes=yes, io=io))
+            harness.configure(
+                _harness_context(
+                    st, yes=yes, io=io, warned_remote=not st.settings.is_local
+                )
+            )
             if harness.configure
             else _launcher_lines(harness)
         ),
@@ -1556,7 +1569,7 @@ def uninstall(
         "--integrations",
         help=(
             "opencode plugin and agent, the Codex provider and profile, shell aliases"
-            " and completion."
+            " and completion, and the backup copies this tool made of any of those files."
         ),
     ),
     state_: bool = typer.Option(False, "--state", help="pid, logs, Hub cache, settings.toml."),
