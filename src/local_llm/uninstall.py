@@ -18,6 +18,7 @@ from .integrations.codex import codex_paths, has_tables, unparsable_but_ours
 from .integrations.opencode import (
     CONFIG_CANDIDATES,
     current_tiny_model,
+    foreign_tiny_model,
     is_strict_json,
     opencode_paths,
 )
@@ -57,6 +58,7 @@ class Inventory:
     tiny_model: str | None = None
     agent_editable: bool = False
     agent_backup: Path | None = None
+    agent_not_utf8: Path | None = None
     completion_files: list[Path] = field(default_factory=list)
     rc_with_block: list[Path] = field(default_factory=list)
     rc_with_retired: list[Path] = field(default_factory=list)
@@ -156,7 +158,15 @@ def inventory(
     for name in CONFIG_CANDIDATES:
         candidate = oc.config_dir / name
         if candidate.is_file():
-            text = candidate.read_text()
+            try:
+                text = candidate.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # Nothing here can be read, so nothing here can be edited. Reported
+                # rather than skipped in silence, and never put in a list something
+                # rewrites: this used to raise before the plan was even printed, so
+                # every uninstall on this machine died with a traceback.
+                inv.agent_not_utf8 = candidate
+                text = ""
             model = current_tiny_model(text)
             if model:
                 inv.agent_config, inv.tiny_model = candidate, model
@@ -263,13 +273,39 @@ def remove_models(paths: Paths, sections: list[str]) -> list[str]:
 
 
 def _remove_agent(config: Path) -> str:
-    data = json.loads(config.read_text() or "{}")
+    """Take our tiny agent back out, and only ours.
+
+    The file is read again here rather than trusted from the inventory, because the
+    person may have edited it since the plan was printed. Every reason not to touch
+    it comes back as one line: this never raises at the caller.
+    """
+    try:
+        text = config.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return encoding_warning(config)
+    if not is_strict_json(text):
+        return (
+            f'{config} has comments, so it is not rewritten: remove the "tiny" agent'
+            " entry from it by hand"
+        )
+    theirs = foreign_tiny_model(text)
+    if theirs is not None:
+        # A tiny agent on a model the router does not serve is the person's own, very
+        # possibly a paid one. configure refuses to replace it, so removing it here
+        # would make the two halves of the tool contradict each other.
+        return f"the tiny agent in {config} is your own, on {theirs}, so it was left alone"
+    data = json.loads(text or "{}")
     agents = data.get("agent")
     if isinstance(agents, dict) and "tiny" in agents:
         del agents["tiny"]
         if not agents:
             del data["agent"]
-        config.write_text(json.dumps(data, indent=2) + "\n")
+        try:
+            # The rest of this file is the person's own providers, keybindings and
+            # agents. Writing it in place truncates all of that if the write stops.
+            atomic_write(config, json.dumps(data, indent=2) + "\n")
+        except OSError as error:
+            return f"could not update {config}: {error}"
         return f"removed the tiny agent from {config}"
     return f"no tiny agent in {config}"
 
@@ -299,14 +335,10 @@ def remove_integrations(
             lines.append(f"deleted {inv.plugin}")
         except OSError as error:
             lines.append(f"could not delete {inv.plugin}: {error}")
+    if inv.agent_not_utf8:
+        lines.append(encoding_warning(inv.agent_not_utf8))
     if inv.agent_config and inv.tiny_model:
-        if inv.agent_editable:
-            lines.append(_remove_agent(inv.agent_config))
-        else:
-            lines.append(
-                f'{inv.agent_config} has comments, so it is not rewritten: remove the "tiny" agent'
-                " entry from it by hand"
-            )
+        lines.append(_remove_agent(inv.agent_config))
     # Every provider takes its own integration back out, so adding one to the registry
     # needs no edit here. Each entry does nothing when the file holds nothing of ours,
     # which is the same reading that put it in the plan a moment ago.
@@ -321,6 +353,9 @@ def remove_integrations(
     backups: set[Path] = {*inv.rc_backups}
     if inv.agent_backup:
         backups.add(inv.agent_backup)
+    if inv.agent_config:
+        # The rewrite above makes one whether or not the inventory saw an older copy.
+        backups.add(backup_path(inv.agent_config))
     rc_files = {*inv.rc_with_block, *inv.rc_with_bash_source}
     if restore_retired:
         rc_files.update(inv.rc_with_retired)

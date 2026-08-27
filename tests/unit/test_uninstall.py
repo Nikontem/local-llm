@@ -420,3 +420,58 @@ def test_a_provider_that_raises_never_aborts_the_uninstall(tmp_path):
         uninstall_module.REGISTRY = original
     assert any("could not remove the OpenAI Codex CLI integration" in line for line in lines)
     assert any("deleted" in line for line in lines), "the rest of the removal still ran"
+
+
+def test_a_tiny_agent_that_is_not_ours_survives_the_uninstall(tmp_path):
+    """configure refuses to replace one; removing it anyway made the two contradict."""
+    paths = populate(tmp_path)
+    config = tmp_path / ".config" / "opencode" / "opencode.json"
+    config.write_text(
+        json.dumps({"agent": {"tiny": {"tools": {"bash": False}, "model": "anthropic/haiku"}}})
+    )
+
+    lines = remove_integrations(inventory(paths, home=tmp_path, env={}), ctx_for(tmp_path))
+
+    still = json.loads(config.read_text())
+    assert still["agent"]["tiny"]["model"] == "anthropic/haiku", "somebody's own agent was deleted"
+    assert any("anthropic/haiku" in line and "left alone" in line for line in lines)
+
+
+def test_the_agent_removal_writes_atomically_and_never_truncates(tmp_path, monkeypatch):
+    """write_text emptied the whole opencode config when the write did not finish."""
+    from local_llm import integrations
+
+    paths = populate(tmp_path)
+    config = tmp_path / ".config" / "opencode" / "opencode.json"
+    original = config.read_text()
+
+    def refuse(source, destination):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(integrations.os, "replace", refuse)
+    lines = remove_integrations(inventory(paths, home=tmp_path, env={}), ctx_for(tmp_path))
+
+    assert config.read_text() == original, "the config was rewritten in place"
+    assert not list(config.parent.glob(".opencode.json.*")), "no temporary file left behind"
+    assert any("could not update" in line and str(config) in line for line in lines)
+
+
+def test_an_opencode_config_that_is_not_utf8_never_stops_the_uninstall(tmp_path):
+    """It used to raise out of inventory(), before the plan was even printed."""
+    paths = populate(tmp_path)
+    config = tmp_path / ".config" / "opencode" / "opencode.json"
+    original = '{"agent": {"tiny": {"model": "llamacpp/b"}}, "note": "caf\xe9"}\n'.encode(
+        "iso-8859-1"
+    )
+    config.write_bytes(original)
+
+    inv = inventory(paths, home=tmp_path, env={})
+
+    assert inv.agent_config is None and inv.tiny_model is None
+
+    lines = remove_integrations(inv, ctx_for(tmp_path), restore_retired=True)
+
+    assert config.read_bytes() == original, "the file was touched"
+    assert any("not UTF-8" in line and str(config) in line for line in lines)
+    assert not (tmp_path / ".zfunc" / "_local-llm").exists(), "the rest of the removal still ran"
+    assert (tmp_path / ".bashrc").read_text() == "export B=2\n"
