@@ -1270,8 +1270,7 @@ def integrate_menu(ctx: typer.Context, yes: bool = typer.Option(
     extra = [h.alias for h in chosen if h.alias]
     if extra and (yes or _interactive()):
         shell = detect_shell()
-        # The agents were already chosen above; their aliases are part of that answer.
-        for line in _integrate_shell(st, shell, aliases=True, yes=True, extra_aliases=extra):
+        for line in _integrate_shell(st, shell, aliases=True, yes=yes, extra_aliases=extra):
             out.print(f"  {line}")
 
 

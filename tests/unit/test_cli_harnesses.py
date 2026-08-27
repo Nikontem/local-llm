@@ -52,7 +52,7 @@ def test_integrate_menu_lists_and_configures(harness):
     h = harness
     fake_which(h.monkeypatch, "codex", "gemini")
     interactive(h.monkeypatch)
-    result = h.run("integrate", input="1\n")
+    result = h.run("integrate", input="1\ny\n")
     assert result.exit_code == 0, result.output
     assert "OpenAI Codex CLI" in result.output and "Not found:" in result.output
     assert "Gemini CLI" in result.output and "google-antigravity" not in result.output
