@@ -50,6 +50,11 @@ def atomic_write(target: Path, text: str, *, backup: bool = True) -> None:
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(text)
+        if destination.is_file():
+            # A temporary file is created readable by its owner alone. Renaming it over
+            # a file that was there already would quietly take away the permissions
+            # somebody chose for it, so they are carried across first.
+            os.chmod(temporary, destination.stat().st_mode & 0o7777)
         os.replace(temporary, destination)
     finally:
         # A failed write must not litter the directory with hidden half-files.

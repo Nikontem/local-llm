@@ -99,12 +99,14 @@ def test_the_rc_file_is_copied_aside_before_it_is_rewritten(harness):
     rc = h.tmp / ".zshrc"
     original = 'export PATH="$HOME/bin:$PATH"\nalias gs=\'git status\'\n'
     rc.write_text(original)
+    rc.chmod(0o644)
 
     result = h.run("completion", "install", "--shell", "zsh", "--yes")
 
     assert result.exit_code == 0, result.output
     assert MARK_BEGIN in rc.read_text()
     assert (h.tmp / ".zshrc.local-llm.bak").read_text() == original
+    assert rc.stat().st_mode & 0o777 == 0o644, "the file's own permissions were changed"
     assert not list(h.tmp.glob(".zshrc.*")) or all(
         p.name == ".zshrc.local-llm.bak" for p in h.tmp.glob(".zshrc.*")
     ), "no temporary file left behind"
