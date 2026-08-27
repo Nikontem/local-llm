@@ -39,7 +39,7 @@ from .estimate import budget_bytes, estimate_bytes, human_gb
 from .gguf import GgufError, read_header, refined_estimate
 from .hardware import Machine, detect, total_ram
 from .hub import Hub, HubCache, HubError, free_disk_bytes, hf_cache_dir
-from .integrations import HarnessContext
+from .integrations import HarnessContext, atomic_write
 from .integrations import codex as codex_integration
 from .integrations import opencode as opencode_integration
 from .logs import current_log, prune_logs, tail_lines
@@ -57,6 +57,8 @@ from .shellrc import (
     block_lines,
     detect_shell,
     install_completion,
+    marker_problem,
+    marker_warning,
     merge_alias_lines,
     rc_file,
     remove_block,
@@ -1170,6 +1172,13 @@ def _integrate_shell(
     lines.append(f"{shell} completion written to {completion_path}")
     rc = rc_file(shell, Path.home())
     text = rc.read_text() if rc.is_file() else ""
+    problem = marker_problem(text)
+    if problem is not None:
+        # Half a marked block means an edit of somebody's went wrong. Adding a second
+        # block below the stray marker is exactly what later empties the whole file.
+        lines.append(marker_warning(rc, problem))
+        lines.append(f"open a new shell, or run:  source {rc}")
+        return lines
     updated, retired = retire_old_source(text)
     if aliases:
         wanted = alias_lines(shell, [TOOL_ALIAS, *extra_aliases])
@@ -1179,8 +1188,13 @@ def _integrate_shell(
         updated = remove_block(updated)
     if updated != text:
         if yes or typer.confirm(f"Update {rc}?", default=True):
-            rc.parent.mkdir(parents=True, exist_ok=True)
-            rc.write_text(updated)
+            try:
+                # A copy first: a shell startup file is a person's own, and this is the
+                # one write in the tool that has no other way back.
+                atomic_write(rc, updated)
+            except OSError as error:
+                lines.append(f"could not update {rc}: {error}")
+                return lines
             if retired:
                 lines.append(f"retired {retired} old line(s) that sourced local_llm.zsh in {rc}")
             if aliases:

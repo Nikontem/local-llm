@@ -1,4 +1,6 @@
 
+from pathlib import Path
+
 from local_llm.shellrc import (
     MARK_BEGIN,
     MARK_END,
@@ -10,6 +12,10 @@ from local_llm.shellrc import (
     block_text,
     completion_script,
     detect_shell,
+    has_block,
+    marker_problem,
+    marker_warning,
+    mentions_block,
     merge_alias_lines,
     old_source_lines,
     rc_file,
@@ -91,3 +97,73 @@ def test_completion_script_mentions_the_program():
     zsh = completion_script("zsh")
     assert "local-llm" in zsh and "_LOCAL_LLM_COMPLETE" in zsh
     assert "local-llm" in completion_script("bash") and "local-llm" in completion_script("fish")
+
+
+# A shell startup file worth losing: a PATH export, somebody's own alias, and the
+# line that makes pyenv work. The reviewer's reproduction emptied all three.
+THEIRS = (
+    'export PATH="$HOME/bin:$PATH"\n'
+    "alias gs='git status'\n"
+    'eval "$(pyenv init -)"\n'
+)
+
+
+def test_half_a_block_is_never_completed_and_never_removed():
+    """A begin marker whose end marker somebody deleted must stop both writers.
+
+    Appending a second block below the stray marker leaves the stray begin and the new
+    end able to pair up, and the next removal deletes every line between them.
+    """
+    stray_begin = THEIRS + MARK_BEGIN + "\nalias local_llm='local-llm'\n"
+    problem = marker_problem(stray_begin)
+    assert problem is not None and MARK_END in problem
+    assert upsert_block(stray_begin, ["alias local_llm='local-llm'"]) == stray_begin
+    assert remove_block(stray_begin) == stray_begin
+    assert block_lines(stray_begin) == [] and not has_block(stray_begin)
+    assert mentions_block(stray_begin), "uninstall still has to see the file to report it"
+
+    stray_end = THEIRS + MARK_END + "\n"
+    problem = marker_problem(stray_end)
+    assert problem is not None and MARK_BEGIN in problem
+    assert upsert_block(stray_end, ["alias local_llm='local-llm'"]) == stray_end
+    assert remove_block(stray_end) == stray_end
+
+    doubled = THEIRS + MARK_BEGIN + "\n" + MARK_BEGIN + "\n" + MARK_END + "\n"
+    assert marker_problem(doubled) is not None
+    assert upsert_block(doubled, ["alias x='y'"]) == doubled
+
+    whole = THEIRS + block_text(["alias local_llm='local-llm'"])
+    assert marker_problem(whole) is None and has_block(whole)
+    assert remove_block(whole) == THEIRS
+
+
+def test_a_marker_mentioned_inside_a_line_is_not_a_marker():
+    """find() matched the marker anywhere, so a comment about it fenced off real lines."""
+    mentioning = (
+        f"# the block below is written by local-llm, between {MARK_BEGIN} and {MARK_END}\n"
+        + THEIRS
+    )
+    assert marker_problem(mentioning) is None
+    assert not has_block(mentioning) and not mentions_block(mentioning)
+    assert remove_block(mentioning) == mentioning
+    added = upsert_block(mentioning, ["alias local_llm='local-llm'"])
+    assert added == mentioning + "\n" + block_text(["alias local_llm='local-llm'"])
+    assert block_lines(added) == ["alias local_llm='local-llm'"]
+    assert remove_block(added) == mentioning + "\n"
+
+    echoed = THEIRS + f'echo "{MARK_BEGIN}"\n'
+    assert not mentions_block(echoed) and remove_block(echoed) == echoed
+
+
+def test_an_indented_marker_is_still_a_marker():
+    indented = f"  {MARK_BEGIN}  \nalias x='y'\n\t{MARK_END}\n"
+    assert marker_problem(indented) is None and has_block(indented)
+    assert block_lines(indented) == ["alias x='y'"]
+    assert remove_block(indented) == ""
+
+
+def test_the_warning_names_the_file_and_says_what_to_do():
+    problem = marker_problem(MARK_BEGIN + "\n")
+    warning = marker_warning(Path("/home/me/.zshrc"), problem)
+    assert warning.startswith("/home/me/.zshrc has a ")
+    assert "by hand" in warning and "left exactly as it is" in warning

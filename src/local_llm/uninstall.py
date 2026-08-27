@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .estimate import human_gb
 from .harnesses import PROVIDER, REGISTRY
-from .integrations import HarnessContext
+from .integrations import HarnessContext, atomic_write
 from .integrations.codex import codex_paths, has_tables, unparsable_but_ours
 from .integrations.opencode import (
     CONFIG_CANDIDATES,
@@ -23,7 +23,14 @@ from .integrations.opencode import (
 )
 from .paths import Paths
 from .preset import Preset, PresetError
-from .shellrc import MARK_BEGIN, RETIRED_PREFIX, rc_file, remove_block
+from .shellrc import (
+    RETIRED_PREFIX,
+    marker_problem,
+    marker_warning,
+    mentions_block,
+    rc_file,
+    remove_block,
+)
 
 KEYS = ("models", "integrations", "state", "config")
 _COMPLETION_FILES = {
@@ -165,8 +172,11 @@ def inventory(
             inv.completion_files.append(completion)
         rc = rc_file(shell, home)
         if rc.is_file():
-            lines = rc.read_text().splitlines()
-            if any(MARK_BEGIN in line for line in lines) and rc not in inv.rc_with_block:
+            content = rc.read_text()
+            lines = content.splitlines()
+            # Half a block counts here: it cannot be removed, but the person has to be
+            # told it is there rather than have the file passed over in silence.
+            if mentions_block(content) and rc not in inv.rc_with_block:
                 inv.rc_with_block.append(rc)
             if (
                 any(line.startswith(RETIRED_PREFIX) for line in lines)
@@ -290,6 +300,12 @@ def remove_integrations(
         rc_files.update(inv.rc_with_retired)
     for rc in sorted(rc_files):
         text = rc.read_text()
+        problem = marker_problem(text)
+        if problem is not None:
+            # Markers that do not pair up: the end marker our removal would delete up to
+            # belongs to somebody else's lines, so this file is not touched at all.
+            lines.append(marker_warning(rc, problem))
+            continue
         updated = remove_block(text)
         updated = "".join(
             line for line in updated.splitlines(keepends=True) if not _BASH_SOURCE.match(line)
@@ -297,7 +313,11 @@ def remove_integrations(
         if restore_retired:
             updated = _restore_retired(updated)
         if updated != text:
-            rc.write_text(updated)
+            try:
+                atomic_write(rc, updated)
+            except OSError as error:  # a failed removal never aborts the run
+                lines.append(f"could not update {rc}: {error}")
+                continue
             what = []
             if rc in inv.rc_with_block:
                 what.append("aliases removed")

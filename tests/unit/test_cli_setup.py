@@ -62,6 +62,54 @@ def test_completion_install_writes_block_and_retires_old_line(harness):
     assert again.exit_code == 0 and MARK_BEGIN not in rc.read_text()
 
 
+# A shell startup file worth losing: a PATH export, somebody's own alias, and the
+# line that makes pyenv work, under a begin marker whose end marker somebody deleted.
+HALF_MARKED = (
+    'export PATH="$HOME/bin:$PATH"\n'
+    "alias gs='git status'\n"
+    'eval "$(pyenv init -)"\n'
+    f"{MARK_BEGIN}\n"
+)
+
+
+def test_a_half_marked_rc_file_is_left_exactly_as_it_is(harness):
+    """The reviewer's reproduction: a fresh block was appended below the stray marker,
+    and the next removal deleted every line between the two, emptying the file."""
+    h = harness
+    h.monkeypatch.setattr(cli, "install_completion", lambda shell: Path("/fake/_zsh"))
+    rc = h.tmp / ".zshrc"
+    rc.write_text(HALF_MARKED)
+
+    result = h.run("completion", "install", "--shell", "zsh", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert rc.read_text() == HALF_MARKED, "the file was rewritten"
+    assert str(rc) in result.output and "by hand" in result.output
+    assert not (h.tmp / ".zshrc.local-llm.bak").exists(), "nothing was rewritten to back up"
+
+    removing = h.run("completion", "install", "--shell", "zsh", "--no-aliases", "--yes")
+    assert removing.exit_code == 0, removing.output
+    assert rc.read_text() == HALF_MARKED
+    assert "by hand" in removing.output
+
+
+def test_the_rc_file_is_copied_aside_before_it_is_rewritten(harness):
+    h = harness
+    h.monkeypatch.setattr(cli, "install_completion", lambda shell: Path("/fake/_zsh"))
+    rc = h.tmp / ".zshrc"
+    original = 'export PATH="$HOME/bin:$PATH"\nalias gs=\'git status\'\n'
+    rc.write_text(original)
+
+    result = h.run("completion", "install", "--shell", "zsh", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert MARK_BEGIN in rc.read_text()
+    assert (h.tmp / ".zshrc.local-llm.bak").read_text() == original
+    assert not list(h.tmp.glob(".zshrc.*")) or all(
+        p.name == ".zshrc.local-llm.bak" for p in h.tmp.glob(".zshrc.*")
+    ), "no temporary file left behind"
+
+
 def test_setup_yes_runs_the_wizard(hubbed):
     h = hubbed
     h.monkeypatch.setattr(cli, "install_completion", lambda shell: Path(f"/fake/_{shell}"))

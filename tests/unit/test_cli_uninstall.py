@@ -71,6 +71,41 @@ def test_restore_shell_line_flag(harness):
     assert "source" in (h.tmp / ".zshrc").read_text()
 
 
+def test_uninstall_leaves_a_half_marked_rc_file_alone_and_says_so(harness):
+    """A stray begin marker used to pair with the end marker of an appended block, and
+    everything between them - a PATH export, a pyenv line - went with the removal."""
+    h = harness
+    populate(h.tmp)
+    rc = h.tmp / ".zshrc"
+    original = (
+        'export PATH="$HOME/bin:$PATH"\n'
+        "alias gs='git status'\n"
+        'eval "$(pyenv init -)"\n'
+        "# >>> local-llm >>>\n"
+    )
+    rc.write_text(original)
+
+    result = h.run("uninstall", "--integrations", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert rc.read_text() == original, "the file was rewritten"
+    assert str(rc) in result.output and "by hand" in result.output
+    assert not (h.tmp / ".zshrc.local-llm.bak").exists(), "nothing was rewritten to back up"
+
+
+def test_uninstall_copies_an_rc_file_aside_before_rewriting_it(harness):
+    h = harness
+    populate(h.tmp)
+    rc = h.tmp / ".zshrc"
+    original = rc.read_text()
+
+    result = h.run("uninstall", "--integrations", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert "# >>> local-llm >>>" not in rc.read_text()
+    assert (h.tmp / ".zshrc.local-llm.bak").read_text() == original
+
+
 def test_zero_and_out_of_range_numbers_are_refused(harness):
     h = harness
     paths = populate(h.tmp)
