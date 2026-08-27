@@ -42,8 +42,9 @@ def claude_env(model: str, preset: Preset, settings: Settings) -> dict[str, str]
         # at the same local model or the router is asked for something it has never
         # heard of. ANTHROPIC_SMALL_FAST_MODEL is the deprecated spelling.
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
-        # Both react to being set at all, whatever the value. A local setup has no
-        # reason to make optional network calls.
+        # These two react to being set at all, whatever the value is. A setup kept
+        # deliberately on this machine has no reason to make optional network calls,
+        # so both the non-essential traffic and the telemetry are turned off.
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "DISABLE_TELEMETRY": "1",
     }

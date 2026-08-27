@@ -96,7 +96,9 @@ def _document(paths: CodexPaths):
     """The parsed file, or None when it does not exist. Raises anything in UNREADABLE."""
     if not paths.config_file.is_file():
         return None
-    return tomlkit.parse(paths.config_file.read_text())
+    # TOML is UTF-8 by definition. Without saying so, a valid config with an accented
+    # comment is read in the locale's encoding and reported as unparsable.
+    return tomlkit.parse(paths.config_file.read_text(encoding="utf-8"))
 
 
 def _ours(doc, parent_name: str) -> dict | None:
@@ -120,7 +122,9 @@ def status(paths: CodexPaths, provider: dict, profile: dict | None) -> str:
         doc = _document(paths)
     except UNREADABLE:
         return "unreadable"
-    if doc is None or _ours(doc, "model_providers") is None:
+    # Either table counts as "it exists". Judging on the provider alone called a stray
+    # [profiles.local-llm] "missing" and overwrote it with no diff and no question.
+    if doc is None or all(_ours(doc, name) is None for name in PARENTS):
         return "missing"
     same_provider = _ours(doc, "model_providers") == provider
     same_profile = profile is None or _ours(doc, "profiles") == profile
@@ -207,7 +211,7 @@ def _atomic_write(paths: CodexPaths, text: str) -> None:
         shutil.copy2(paths.config_file, paths.backup)
     handle, temporary = tempfile.mkstemp(dir=target.parent, prefix=".config.toml.")
     try:
-        with os.fdopen(handle, "w") as stream:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(text)
         os.replace(temporary, target)
     finally:
@@ -287,7 +291,8 @@ def configure(ctx: HarnessContext) -> list[str]:
         except UNREADABLE as error:
             # A read-only home, a full disk or somebody else's file: say so, never raise.
             return [f"could not update {paths.config_file}: {error}"]
-        lines.append(f"provider and profile local-llm written to {paths.config_file}")
+        written = "provider" if profile is None else "provider and profile"
+        lines.append(f"{written} local-llm written to {paths.config_file}")
 
     if profile is None:
         lines.append("no model in models.ini yet, so no profile was written")
@@ -325,7 +330,7 @@ def removal_lines(paths: CodexPaths) -> list[str]:
         ]
     try:
         removed = drop(paths)
-    except OSError as error:
+    except UNREADABLE as error:
         return [f"could not update {paths.config_file}: {error}"]
     if not removed:
         return []

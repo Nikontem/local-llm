@@ -288,7 +288,9 @@ it, and an alias is offered.
 - **`local-llm claude [MODEL] [-- ARGS...]`** — `ANTHROPIC_BASE_URL`,
   `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, a dummy
   `ANTHROPIC_API_KEY`, and `CLAUDE_CODE_AUTO_COMPACT_WINDOW` from the model's
-  context. Alias `claude_local`.
+  context. It also sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` and
+  `DISABLE_TELEMETRY`, because a setup kept deliberately on this machine has no
+  reason to make optional network calls. Alias `claude_local`.
 - **`local-llm copilot [MODEL] [--online|--offline]`** — the
   `COPILOT_PROVIDER_*` variables; `--offline` (the default) keeps Copilot from
   also reaching the network. The two token-limit variables it sets are

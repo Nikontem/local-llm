@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import socket
@@ -257,10 +258,30 @@ def run_checks(
 
     # agents
     from . import harnesses
+    from .integrations import HarnessContext
     from .integrations.codex import codex_paths, configured_base_url
 
     installed, missing = harnesses.detect(env.which)
-    detail = "found: " + (", ".join(h.title for h in installed) or "none")
+    try:  # a models.ini doctor has already complained about must not stop the report
+        configured_models = Preset.load(paths.preset) if paths.preset.is_file() else None
+    except PresetError:
+        configured_models = None
+    context = HarnessContext(
+        paths=paths,
+        settings=settings,
+        preset=configured_models,
+        home=env.home or Path.home(),
+        env=os.environ if env.environ is None else env.environ,
+    )
+
+    def titled(harness) -> str:
+        """A provider says how it is configured; a launcher's alias is not doctor's business."""
+        if harness.kind != harnesses.PROVIDER:
+            return harness.title
+        state = harnesses.safe_status(harness, lambda h: h.status(context))
+        return f"{harness.title} ({harnesses.PROVIDER_WORDS.get(state, 'not configured')})"
+
+    detail = "found: " + (", ".join(titled(h) for h in installed) or "none")
     if missing:
         detail += "; not found: " + ", ".join(h.title for h in missing)
     checks.append(Check("agents", "ok", detail))

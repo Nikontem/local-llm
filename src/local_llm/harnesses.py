@@ -11,6 +11,7 @@ from .integrations import HarnessContext
 from .integrations import codex as codex_integration
 from .integrations import opencode as opencode_integration
 from .settings import Settings
+from .shellrc import alias_name, block_lines, detect_shell, rc_file
 
 PROVIDER = "provider"
 LAUNCHER = "launcher"
@@ -35,6 +36,22 @@ class Harness:
     configure: Callable[[HarnessContext], list[str]] | None = None
     remove: Callable[[HarnessContext], list[str]] | None = None
     status: Callable[[HarnessContext], str] | None = None
+
+
+def alias_status(alias: str, ctx: HarnessContext) -> str:
+    """A launcher writes nothing but its shell alias, so that alone is its status.
+
+    "same" when the alias line sits inside our marked block in the shell startup
+    file, "missing" when it does not, "unknown" when the file cannot be read.
+    """
+    rc = rc_file(detect_shell(env=ctx.env), ctx.home)
+    if not rc.is_file():
+        return "missing"
+    try:
+        text = rc.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "unknown"
+    return "same" if alias in {alias_name(line) for line in block_lines(text)} else "missing"
 
 
 GEMINI_NOTE = (
@@ -80,6 +97,7 @@ REGISTRY: tuple[Harness, ...] = (
         kind=LAUNCHER,
         summary="local-llm claude",
         alias=("claude_local", "local-llm claude"),
+        status=partial(alias_status, "claude_local"),
     ),
     Harness(
         key="copilot",
@@ -88,6 +106,7 @@ REGISTRY: tuple[Harness, ...] = (
         kind=LAUNCHER,
         summary="local-llm copilot",
         alias=("copilot_local", "local-llm copilot"),
+        status=partial(alias_status, "copilot_local"),
     ),
     Harness(
         key="aider",
@@ -96,6 +115,7 @@ REGISTRY: tuple[Harness, ...] = (
         kind=LAUNCHER,
         summary="local-llm aider",
         alias=("aider_local", "local-llm aider"),
+        status=partial(alias_status, "aider_local"),
     ),
     Harness(
         key="qwen",
@@ -104,6 +124,7 @@ REGISTRY: tuple[Harness, ...] = (
         kind=LAUNCHER,
         summary="local-llm qwen",
         alias=("qwen_local", "local-llm qwen"),
+        status=partial(alias_status, "qwen_local"),
     ),
     Harness(
         key="gemini",
@@ -144,9 +165,16 @@ def numbered(installed: Sequence[Harness]) -> list[Harness]:
     return [h for h in installed if h.kind in (PROVIDER, LAUNCHER)]
 
 
-def note_lines(settings: Settings, installed: Sequence[Harness]) -> list[str]:
-    """The one warning the menu owes a person before it writes another tool's config."""
-    if settings.is_local or not numbered(installed):
+def note_lines(
+    settings: Settings, installed: Sequence[Harness], rows: Sequence[Harness] | None = None
+) -> list[str]:
+    """The one warning the menu owes a person before it writes another tool's config.
+
+    `rows` is the numbered list when the caller already has it, so one menu render
+    does not work it out several times over.
+    """
+    choices = numbered(installed) if rows is None else rows
+    if settings.is_local or not choices:
         return []
     return [
         "",
@@ -166,17 +194,26 @@ def safe_status(harness: Harness, status_of: Callable[[Harness], str]) -> str:
         return "unknown"
 
 
+#: What each state means for a provider, in words true of a Codex config file and of
+#: an opencode plugin alike: what fails to be read is not always a config file.
+PROVIDER_WORDS = {
+    "same": "configured",
+    "different": "configured, but differs from ours",
+    "unreadable": "what it has configured cannot be read",
+    "unknown": "cannot tell",
+}
+
+
 def _status_note(harness: Harness, state: str) -> str:
     if harness.kind == PROVIDER:
-        return {
-            "same": "configured",
-            "different": "configured, but differs from ours",
-            "unreadable": "its config file does not parse",
-            "unknown": "cannot tell — its config file could not be read",
-        }.get(state, "not configured")
+        return PROVIDER_WORDS.get(state, "not configured")
     if harness.kind == LAUNCHER:
         alias = harness.alias[0] if harness.alias else ""
-        return f"alias {alias} installed" if state == "same" else f"alias {alias}"
+        if state == "same":
+            return f"alias {alias} installed"
+        if state == "unknown":
+            return f"alias {alias} — the shell startup file could not be read"
+        return f"alias {alias}"
     return ""
 
 
@@ -184,10 +221,11 @@ def render(
     installed: Sequence[Harness],
     missing: Sequence[Harness],
     status_of: Callable[[Harness], str],
+    rows: Sequence[Harness] | None = None,
 ) -> list[str]:
     """The whole menu as lines, ready to print. Numbering matches numbered()."""
     lines: list[str] = []
-    choices = numbered(installed)
+    choices = list(numbered(installed) if rows is None else rows)
     if not installed:
         lines.append("  No coding agents found on PATH.")
         lines.append("  local-llm env prints the exports for any other tool.")

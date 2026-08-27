@@ -211,3 +211,28 @@ def test_codex_config_check_warns_when_the_address_moved(tmp_path):
     moved = {c.name: c for c in run_checks(paths, Settings(port=9999), env=env)}
     assert moved["codex config"].status == "warn"
     assert "integrate codex" in moved["codex config"].fix
+
+
+def test_agents_check_reports_how_each_provider_is_configured(tmp_path):
+    from local_llm.doctor import Env, run_checks
+    from local_llm.integrations import codex
+    from local_llm.paths import Paths
+    from local_llm.settings import Settings
+
+    paths = Paths.from_env(env={}, home=tmp_path)
+    env = Env(
+        system="Darwin",
+        machine="arm64",
+        which=lambda name: f"/usr/local/bin/{name}" if name in ("codex", "claude") else None,
+        token_status=lambda: TokenStatus("valid", "someone"),
+        port_in_use=lambda host, port: False,
+        home=tmp_path,
+        environ={},
+    )
+    detail = by_name(run_checks(paths, Settings(), env=env))["agents"].detail
+    assert "OpenAI Codex CLI (not configured)" in detail
+    assert "Claude Code" in detail and "Claude Code (" not in detail, "launchers stay plain"
+
+    codex.write(codex.codex_paths(home=tmp_path, env={}), codex.provider_table(Settings()), None)
+    detail = by_name(run_checks(paths, Settings(), env=env))["agents"].detail
+    assert "OpenAI Codex CLI (configured)" in detail

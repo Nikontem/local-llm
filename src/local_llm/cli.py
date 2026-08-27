@@ -1229,6 +1229,9 @@ def integrate_menu(ctx: typer.Context, yes: bool = typer.Option(
     False, "-y", "--yes", help="Configure every agent found, without asking."
 )) -> None:
     """With no agent named, show what is installed and configure what you pick."""
+    # --yes binds to this callback, so `integrate --yes codex` sets it here and never
+    # on the subcommand. Stash it where the subcommand can find it.
+    ctx.obj = {"yes": yes}
     if ctx.invoked_subcommand is not None:
         return
     st = state()
@@ -1248,12 +1251,12 @@ def integrate_menu(ctx: typer.Context, yes: bool = typer.Option(
     rows = harnesses.numbered(installed)
     chosen: list[harnesses.Harness] = []
     if rows and yes:
-        show_harnesses(io, st.settings, installed, missing, status_of)
+        show_harnesses(io, st.settings, installed, missing, status_of, rows)
         chosen = rows
     elif rows and _interactive():
-        chosen = choose_harnesses(io, st.settings, installed, missing, status_of)
+        chosen = choose_harnesses(io, st.settings, installed, missing, status_of, rows)
     else:
-        show_harnesses(io, st.settings, installed, missing, status_of)
+        show_harnesses(io, st.settings, installed, missing, status_of, rows)
     for harness in chosen:
         out.print(f"  {harness.title}")
         try:
@@ -1279,22 +1282,29 @@ def _launcher_lines(harness: harnesses.Harness) -> list[str]:
     return [f"run it with:  {harness.summary}{alias}"]
 
 
+def _yes_from(ctx: typer.Context, yes: bool) -> bool:
+    """--yes counts whether it was written before the subcommand name or after it."""
+    return yes or bool((ctx.obj or {}).get("yes"))
+
+
 @integrate_app.command("codex")
 def integrate_codex_cmd(
+    ctx: typer.Context,
     yes: bool = typer.Option(False, "-y", "--yes", help="Do not ask."),
 ) -> None:
     """Write the local-llm provider and profile into Codex's config.toml."""
-    for line in codex_integration.configure(_harness_context(state(), yes=yes)):
+    for line in codex_integration.configure(_harness_context(state(), yes=_yes_from(ctx, yes))):
         out.print(line)
 
 
 @integrate_app.command("opencode")
 def integrate_opencode_cmd(
+    ctx: typer.Context,
     agent: bool = typer.Option(True, "--agent/--no-agent", help="Also add the tiny helper agent."),
     yes: bool = typer.Option(False, "-y", "--yes", help="Do not ask."),
 ) -> None:
     """Install the opencode plugin that lists every model in models.ini."""
-    for line in _integrate_opencode(state(), agent=agent, yes=yes):
+    for line in _integrate_opencode(state(), agent=agent, yes=_yes_from(ctx, yes)):
         out.print(line)
 
 
@@ -1457,7 +1467,12 @@ def uninstall(
         False, "--models", help="Remove every model section and its files."
     ),
     integrations: bool = typer.Option(
-        False, "--integrations", help="opencode plugin and agent, shell aliases and completion."
+        False,
+        "--integrations",
+        help=(
+            "opencode plugin and agent, the Codex provider and profile, shell aliases"
+            " and completion."
+        ),
     ),
     state_: bool = typer.Option(False, "--state", help="pid, logs, Hub cache, settings.toml."),
     config: bool = typer.Option(False, "--config", help="models.ini and its backup."),

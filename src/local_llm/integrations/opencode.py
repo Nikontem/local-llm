@@ -162,5 +162,5 @@ def configure(ctx: HarnessContext, *, agent: bool = True) -> list[str]:
 
 
 def harness_status(ctx: HarnessContext) -> str:
-    """missing, same or different, judged on the plugin file alone."""
+    """missing, same, different or unreadable, judged on the plugin file alone."""
     return plugin_status(opencode_paths(home=ctx.home, env=ctx.env))

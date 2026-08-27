@@ -61,9 +61,23 @@ def test_write_preserves_everything_else_and_keeps_a_backup(tmp_path):
     paths.config_file.write_text(EXISTING)
     codex.write(paths, codex.provider_table(Settings()), codex.profile_table("small"))
     text = paths.config_file.read_text()
-    assert "# my codex config" in text
-    assert '[model_providers.other]' in text and '[profiles.work]' in text
     assert '[model_providers.local-llm]' in text and 'wire_api = "responses"' in text
+    assert '[profiles.local-llm]' in text
+
+    # Everything above the first table we own is byte for byte what it was.
+    head = text[: text.index("[model_providers.local-llm]")]
+    assert head == EXISTING[: EXISTING.index("[profiles.work]")]
+
+    # And nothing of the person's below it was changed, dropped or reordered. The
+    # comparison drops blank lines because tomlkit takes the blank line that separated
+    # the last provider from [profiles.work] as the slot for our table: where our tables
+    # land inside an existing file is a recorded, deliberately deferred decision, so this
+    # test says what is true rather than asserting a layout the writer does not promise.
+    remaining = [line for line in text.splitlines() if line.strip()]
+    for line in (line for line in EXISTING.splitlines() if line.strip()):
+        assert line in remaining, f"{line!r} did not survive the write"
+        remaining = remaining[remaining.index(line) + 1 :]
+
     assert paths.backup.read_text() == EXISTING
     assert not list(paths.config_dir.glob(".config.toml.*")), "no temporary file left behind"
 
@@ -293,3 +307,39 @@ def test_a_symlinked_config_stays_a_symlink(tmp_path):
     assert "# my codex config" in real.read_text()
     assert not list(dotfiles.glob(".config.toml.*")), "no temporary file left behind"
     assert paths.backup.read_text() == EXISTING, "the backup sits beside the link"
+
+
+def test_the_written_line_names_a_profile_only_when_one_was_written(tmp_path):
+    lines = codex.configure(make_ctx(tmp_path, models=()))
+    assert any(line.startswith("provider local-llm written to") for line in lines)
+    assert not any("provider and profile" in line for line in lines)
+    assert any("no model in models.ini" in line for line in lines)
+
+    with_model = codex.configure(make_ctx(tmp_path / "other", models=("small",)))
+    assert any("provider and profile local-llm written to" in line for line in with_model)
+
+
+def test_a_stray_profile_with_no_provider_still_counts_as_configured(tmp_path):
+    """Judging on the provider table alone called this 'missing' and overwrote it
+    with no difference shown and no question asked."""
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True)
+    paths.config_file.write_text('[profiles.local-llm]\nmodel = "small"\n')
+    provider = codex.provider_table(Settings())
+    assert codex.status(paths, provider, codex.profile_table("small")) == "different"
+
+    refusing = make_ctx(tmp_path, yes=False, answers=[False])
+    assert codex.configure(refusing) == ["left as it is"]
+    assert paths.config_file.read_text() == '[profiles.local-llm]\nmodel = "small"\n'
+
+
+def test_an_accented_comment_does_not_make_a_config_unparsable(tmp_path):
+    """TOML is UTF-8 by definition; without saying so the locale decides, and a
+    perfectly valid file is reported as broken."""
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True)
+    paths.config_file.write_text('# réglages Codex — à garder\nmodel = "gpt-5"\n', encoding="utf-8")
+    assert codex.parse_problem(paths) is None
+    codex.write(paths, codex.provider_table(Settings()), None)
+    text = paths.config_file.read_text(encoding="utf-8")
+    assert "# réglages Codex — à garder" in text and "[model_providers.local-llm]" in text

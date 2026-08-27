@@ -94,3 +94,49 @@ def test_safe_status_never_raises():
     assert harnesses.safe_status(harness, explode) == "unknown"
     assert harnesses.safe_status(harness, lambda h: "same") == "same"
     assert harnesses.safe_status(harnesses.find("gemini"), explode) == ""
+
+
+def alias_ctx(home, env=None):
+    from local_llm.integrations import HarnessContext
+    from local_llm.paths import Paths
+    from local_llm.settings import Settings
+
+    return HarnessContext(
+        paths=Paths.from_env(env={}, home=home),
+        settings=Settings(),
+        home=home,
+        env={"SHELL": "/bin/zsh"} if env is None else env,
+    )
+
+
+def test_a_launcher_reports_whether_its_alias_is_installed(tmp_path):
+    """The menu's 'alias claude_local installed' row was unreachable: no launcher
+    entry had a status, so the state could never be 'same'."""
+    from local_llm.shellrc import block_text
+
+    ctx = alias_ctx(tmp_path)
+    claude = harnesses.find("claude")
+    assert claude.status is not None
+    assert claude.status(ctx) == "missing", "there is no shell startup file at all"
+
+    rc = tmp_path / ".zshrc"
+    rc.write_text("alias claude_local='local-llm claude'\n")
+    assert claude.status(ctx) == "missing", "an alias outside our block is not ours"
+
+    rc.write_text("export A=1\n" + block_text(["alias claude_local='local-llm claude'"]))
+    assert claude.status(ctx) == "same"
+    assert harnesses.find("aider").status(ctx) == "missing", "only the alias that is there"
+
+    rc.write_bytes(b"\xff\xfe not valid utf-8")
+    assert claude.status(ctx) == "unknown"
+
+
+def test_the_menu_row_says_an_installed_alias_is_installed(tmp_path):
+    from local_llm.shellrc import block_text
+
+    (tmp_path / ".zshrc").write_text(block_text(["alias claude_local='local-llm claude'"]))
+    ctx = alias_ctx(tmp_path)
+    installed, missing = harnesses.detect(which_only("claude", "aider"))
+    text = "\n".join(harnesses.render(installed, missing, lambda h: h.status(ctx)))
+    assert "alias claude_local installed" in text
+    assert "alias aider_local" in text and "alias aider_local installed" not in text

@@ -123,14 +123,17 @@ def test_setup_wires_harness_prompts_through_the_wizard(harness):
 
 
 def test_menu_survives_a_harness_whose_status_cannot_be_read(harness):
+    """A dangling symlink proved nothing: Path.is_file() follows links and answers False,
+    so the guarded read was never reached. A file whose bytes are not UTF-8 does reach it."""
     h = harness
     fake_which(h.monkeypatch, "opencode")
     plugin = h.tmp / ".config" / "opencode" / "plugins" / "local-llm-models.js"
     plugin.parent.mkdir(parents=True)
-    plugin.symlink_to(h.tmp / "does-not-exist.js")
+    plugin.write_bytes(b"\xff\xfe not valid utf-8 at all")
     result = h.run("integrate")
     assert result.exit_code == 0, result.output
     assert "opencode" in result.output
+    assert "cannot be read" in result.output, "the row says it could not be read"
 
 
 def test_menu_reasks_after_an_answer_it_cannot_parse(harness):
@@ -194,3 +197,17 @@ def test_a_harness_that_raises_does_not_stop_the_ones_after_it(harness):
     assert result.exit_code == 0, result.output
     assert "could not configure OpenAI Codex CLI: something nobody predicted" in result.output
     assert "local-llm claude" in result.output
+
+
+def test_yes_before_the_subcommand_name_still_counts(harness):
+    """--yes binds to the group callback, so `integrate --yes codex` set it there
+    and the subcommand never saw it."""
+    h = harness
+    seen: list[bool] = []
+    h.monkeypatch.setattr(
+        cli.codex_integration, "configure", lambda ctx: seen.append(ctx.yes) or []
+    )
+    assert h.run("integrate", "--yes", "codex").exit_code == 0
+    assert h.run("integrate", "codex", "--yes").exit_code == 0
+    assert h.run("integrate", "codex").exit_code == 0
+    assert seen == [True, True, False]
