@@ -225,3 +225,18 @@ def test_configure_reports_a_write_that_fails(tmp_path, monkeypatch):
         f"could not update {codex.codex_paths(home=tmp_path, env={}).config_file}:"
         " [Errno 30] Read-only file system"
     ]
+
+
+def test_backup_never_writes_through_a_symlink(tmp_path):
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True)
+    paths.config_file.write_text(EXISTING)
+    elsewhere = tmp_path / "somebody-elses-file"
+    elsewhere.write_text("do not touch me\n")
+    paths.backup.symlink_to(elsewhere)
+
+    codex.write(paths, codex.provider_table(Settings()), codex.profile_table("small"))
+
+    assert elsewhere.read_text() == "do not touch me\n", "the link target was overwritten"
+    assert not paths.backup.is_symlink()
+    assert paths.backup.read_text() == EXISTING

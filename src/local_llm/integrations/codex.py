@@ -175,6 +175,8 @@ def current_render(paths: CodexPaths) -> str:
 def _atomic_write(paths: CodexPaths, text: str) -> None:
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     if paths.config_file.is_file():
+        if paths.backup.is_symlink():
+            paths.backup.unlink()  # never write through a link somebody put there
         shutil.copy2(paths.config_file, paths.backup)
     handle, temporary = tempfile.mkstemp(dir=paths.config_dir, prefix=".config.toml.")
     try:
