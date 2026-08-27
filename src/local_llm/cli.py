@@ -1526,7 +1526,8 @@ def uninstall(
         for line in remove_models(st.paths, sections):
             out.print(f"  {line}")
     if "integrations" in chosen:
-        for line in remove_integrations(inv, restore_retired=restore_shell_line):
+        context = _harness_context(st, yes=True)  # removal asks nothing
+        for line in remove_integrations(inv, context, restore_retired=restore_shell_line):
             out.print(f"  {line}")
     if "state" in chosen:
         for line in remove_state(inv):

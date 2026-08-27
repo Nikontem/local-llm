@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .estimate import human_gb
-from .integrations.codex import codex_paths, has_tables, paths_for, removal_lines
+from .harnesses import PROVIDER, REGISTRY
+from .integrations import HarnessContext
+from .integrations.codex import codex_paths, has_tables
 from .integrations.opencode import (
     CONFIG_CANDIDATES,
     current_tiny_model,
@@ -247,7 +249,14 @@ def _restore_retired(text: str) -> str:
     return "".join(restored)
 
 
-def remove_integrations(inv: Inventory, *, restore_retired: bool = False) -> list[str]:
+def remove_integrations(
+    inv: Inventory, context: HarnessContext, *, restore_retired: bool = False
+) -> list[str]:
+    """Undo the integrations in the inventory, plus whatever the registry's providers wrote.
+
+    The context is what each registry entry needs to find its own files, and is
+    required rather than defaulted so nothing can quietly read the real home.
+    """
     lines: list[str] = []
     if inv.plugin and inv.plugin.exists():
         try:
@@ -263,10 +272,16 @@ def remove_integrations(inv: Inventory, *, restore_retired: bool = False) -> lis
                 f'{inv.agent_config} has comments, so it is not rewritten: remove the "tiny" agent'
                 " entry from it by hand"
             )
-    if inv.codex_config:
-        # removal_lines() deletes the backup it made itself, and only when it actually
-        # rewrote the file: a config left untouched keeps whatever backup it had.
-        lines.extend(removal_lines(paths_for(inv.codex_config)))
+    # Every provider takes its own integration back out, so adding one to the registry
+    # needs no edit here. Each entry does nothing when the file holds nothing of ours,
+    # which is the same reading that put it in the plan a moment ago.
+    for harness in REGISTRY:
+        if harness.kind != PROVIDER or harness.remove is None:
+            continue
+        try:
+            lines.extend(harness.remove(context))
+        except Exception as error:  # a failed removal never aborts the run
+            lines.append(f"could not remove the {harness.title} integration: {error}")
     rc_files = {*inv.rc_with_block, *inv.rc_with_bash_source}
     if restore_retired:
         rc_files.update(inv.rc_with_retired)

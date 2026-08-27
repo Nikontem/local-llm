@@ -289,6 +289,11 @@ def harness_status(ctx: HarnessContext) -> str:
     )
 
 
+def remove(ctx: HarnessContext) -> list[str]:
+    """Everything a Codex integration consists of, taken back out. For uninstall."""
+    return removal_lines(codex_paths(home=ctx.home, env=ctx.env))
+
+
 def removal_lines(paths: CodexPaths) -> list[str]:
     """Delete our tables and say what happened, for uninstall."""
     problem = parse_problem(paths)

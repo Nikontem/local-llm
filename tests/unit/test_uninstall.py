@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
 
+from local_llm.integrations import HarnessContext
 from local_llm.paths import Paths
 from local_llm.preset import Preset
+from local_llm.settings import Settings
 from local_llm.shellrc import MARK_BEGIN, RETIRED_PREFIX, block_text
 from local_llm.uninstall import (
     KEYS,
@@ -14,6 +16,17 @@ from local_llm.uninstall import (
     remove_state,
     tool_uninstall_hint,
 )
+
+
+def ctx_for(home: Path) -> HarnessContext:
+    """What a registry entry needs to find its own files, pinned to a scratch home."""
+    return HarnessContext(
+        paths=Paths.from_env(env={}, home=home),
+        settings=Settings(),
+        home=home,
+        env={},
+        yes=True,
+    )
 
 
 def populate(home: Path, *, jsonc: bool = False) -> Paths:
@@ -127,7 +140,7 @@ def test_delete_model_file_removes_symlink_and_blob(tmp_path):
 def test_remove_integrations_with_and_without_restore(tmp_path):
     paths = populate(tmp_path)
     inv = inventory(paths, home=tmp_path, env={})
-    lines = remove_integrations(inv, restore_retired=True)
+    lines = remove_integrations(inv, ctx_for(tmp_path), restore_retired=True)
     assert not (tmp_path / ".config" / "opencode" / "plugins" / "local-llm-models.js").exists()
     config = json.loads((tmp_path / ".config" / "opencode" / "opencode.json").read_text())
     assert "tiny" not in config["agent"] and config["agent"]["other"] == {"mode": "primary"}
@@ -140,7 +153,7 @@ def test_remove_integrations_with_and_without_restore(tmp_path):
     assert not (tmp_path / ".zfunc" / "_local-llm").exists()
     assert not (tmp_path / ".bash_completions" / "local-llm.sh").exists()
     assert any("restored" in line for line in lines)
-    again = remove_integrations(inventory(paths, home=tmp_path, env={}))
+    again = remove_integrations(inventory(paths, home=tmp_path, env={}), ctx_for(tmp_path))
     assert again == []
 
 
@@ -148,7 +161,7 @@ def test_remove_integrations_keeps_retired_line_by_default_and_skips_jsonc(tmp_p
     paths = populate(tmp_path, jsonc=True)
     inv = inventory(paths, home=tmp_path, env={})
     assert inv.agent_config and inv.agent_config.name == "opencode.jsonc" and not inv.agent_editable
-    lines = remove_integrations(inv)
+    lines = remove_integrations(inv, ctx_for(tmp_path))
     assert RETIRED_PREFIX in (tmp_path / ".zshrc").read_text()
     assert "// c" in (tmp_path / ".config" / "opencode" / "opencode.jsonc").read_text()
     assert any('remove the "tiny" agent' in line for line in lines)
@@ -229,7 +242,9 @@ def test_restore_only_strips_prefixed_lines(tmp_path):
     paths = populate(tmp_path)
     zshrc = tmp_path / ".zshrc"
     zshrc.write_text(zshrc.read_text() + 'echo "# retired by local-llm: nothing"\n')
-    remove_integrations(inventory(paths, home=tmp_path, env={}), restore_retired=True)
+    remove_integrations(
+        inventory(paths, home=tmp_path, env={}), ctx_for(tmp_path), restore_retired=True
+    )
     text = zshrc.read_text()
     assert 'echo "# retired by local-llm: nothing"' in text
     assert text.count(RETIRED_PREFIX) == 1 and "&& source" in text
@@ -263,7 +278,7 @@ def test_inventory_finds_the_codex_tables(tmp_path):
 def test_remove_integrations_strips_only_our_codex_tables(tmp_path):
     populate(tmp_path)
     inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
-    lines = remove_integrations(inv)
+    lines = remove_integrations(inv, ctx_for(tmp_path))
     text = (tmp_path / ".codex" / "config.toml").read_text()
     assert "local-llm" not in text and 'model = "gpt-5"' in text
     assert any("model_providers.local-llm" in line for line in lines)
@@ -275,3 +290,61 @@ def test_remove_integrations_refuses_an_unparsable_codex_file(tmp_path):
     inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
     assert inv.codex_config is None, "a file we cannot read holds nothing of ours"
     assert (tmp_path / ".codex" / "config.toml").read_text() == "[oops\n"
+
+
+def test_removal_goes_through_the_registry_not_a_hardcoded_list(tmp_path):
+    """A provider added to the registry must be removed without editing uninstall.py."""
+    import dataclasses
+
+    from local_llm import harnesses
+
+    populate(tmp_path)
+    called: list[str] = []
+
+    def remove_invented(ctx):
+        called.append(str(ctx.home))
+        return ["removed the invented provider"]
+
+    invented = dataclasses.replace(
+        harnesses.find("codex"), key="invented", title="Invented CLI", remove=remove_invented
+    )
+    inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
+    lines = remove_integrations(inv, ctx_for(tmp_path))
+    assert not any("invented" in line for line in lines)
+
+    monkey = (*harnesses.REGISTRY, invented)
+    import local_llm.uninstall as uninstall_module
+
+    original = uninstall_module.REGISTRY
+    uninstall_module.REGISTRY = monkey
+    try:
+        again = remove_integrations(inv, ctx_for(tmp_path))
+    finally:
+        uninstall_module.REGISTRY = original
+    assert "removed the invented provider" in again
+    assert called == [str(tmp_path)], "the entry was handed the context, not the real home"
+
+
+def test_a_provider_that_raises_never_aborts_the_uninstall(tmp_path):
+    import dataclasses
+
+    import local_llm.uninstall as uninstall_module
+    from local_llm import harnesses
+
+    populate(tmp_path)
+
+    def explode(ctx):
+        raise ValueError("nobody predicted this")
+
+    broken = dataclasses.replace(harnesses.find("codex"), remove=explode)
+    inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
+    original = uninstall_module.REGISTRY
+    uninstall_module.REGISTRY = tuple(
+        broken if entry.key == "codex" else entry for entry in harnesses.REGISTRY
+    )
+    try:
+        lines = remove_integrations(inv, ctx_for(tmp_path))
+    finally:
+        uninstall_module.REGISTRY = original
+    assert any("could not remove the OpenAI Codex CLI integration" in line for line in lines)
+    assert any("deleted" in line for line in lines), "the rest of the removal still ran"

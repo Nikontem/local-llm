@@ -33,6 +33,7 @@ class Harness:
     note: str = ""
     alias: tuple[str, str] | None = None
     configure: Callable[[HarnessContext], list[str]] | None = None
+    remove: Callable[[HarnessContext], list[str]] | None = None
     status: Callable[[HarnessContext], str] | None = None
 
 
@@ -60,6 +61,7 @@ REGISTRY: tuple[Harness, ...] = (
         summary="~/.codex/config.toml: provider and profile local-llm (experimental)",
         alias=("codex_local", "codex --profile local-llm"),
         configure=codex_integration.configure,
+        remove=codex_integration.remove,
         status=codex_integration.harness_status,
     ),
     Harness(
