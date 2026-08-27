@@ -114,10 +114,10 @@ def make_ctx(tmp_path, script, *, yes=False, tools=None, token="valid", backend=
         ),
         choose_quant=lambda options, suggested, machine: suggested,
         pull=pull,
-        integrate_shell=lambda shell: integrations.append(f"shell:{shell}")
+        integrate_shell=lambda shell, extra=(): integrations.append(f"shell:{shell}")
         or [f"completion for {shell} installed"],
-        integrate_opencode=lambda: integrations.append("opencode")
-        or ["opencode plugin installed"],
+        harness_status=lambda harness: "missing",
+        configure_harness=lambda harness: [],
         shell="zsh",
     )
     ctx.pulled = pulled  # type: ignore[attr-defined]
@@ -139,7 +139,7 @@ def test_full_run_with_yes_and_a_preselected_model(tmp_path):
     assert ctx.paths.settings_file.is_file()
     settings_text = ctx.paths.settings_file.read_text()
     assert 'default_model = "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q8_0"' in settings_text
-    assert ctx.integrations == ["shell:zsh", "opencode"]
+    assert ctx.integrations == ["shell:zsh"]  # agents now go through configure_harness
     assert ctx.backend.spawned, "router was started"
     expected_call = (
         "POST",
@@ -233,3 +233,45 @@ def test_smallest_model_and_step_models_with_bad_preselection(tmp_path):
         assert "No such repository" in str(error)
     else:
         raise AssertionError("expected SetupAbort")
+
+
+def test_step_six_offers_installed_agents_and_configures_the_chosen(tmp_path):
+    from local_llm.setup import step_integrations
+
+    script = Script(confirms=[True], asks=["1"])
+    ctx = make_ctx(tmp_path, script, tools={
+        "codex": "/usr/local/bin/codex",
+        "claude": "/usr/local/bin/claude",
+        "gemini": "/usr/local/bin/gemini",
+    })
+    done: list[str] = []
+    ctx.configure_harness = lambda h: done.append(h.key) or [f"{h.key} done"]
+    ctx.harness_status = lambda h: "missing"
+    step_integrations(ctx)
+    text = script.text()
+    assert "1. OpenAI Codex CLI" in text and "2. Claude Code" in text
+    assert "Gemini CLI" in text and "Not found:" in text
+    assert done == ["codex"] and "codex done" in text
+
+
+def test_step_six_with_yes_configures_everything_installed(tmp_path):
+    from local_llm.setup import step_integrations
+
+    script = Script()
+    ctx = make_ctx(tmp_path, script, yes=True, tools={"codex": "/x", "aider": "/y"})
+    done: list[str] = []
+    ctx.configure_harness = lambda h: done.append(h.key) or []
+    ctx.harness_status = lambda h: "missing"
+    step_integrations(ctx)
+    assert done == ["codex", "aider"]
+
+
+def test_step_six_says_when_nothing_is_installed(tmp_path):
+    from local_llm.setup import step_integrations
+
+    script = Script(confirms=[True])
+    ctx = make_ctx(tmp_path, script, tools={})
+    ctx.configure_harness = lambda h: []
+    ctx.harness_status = lambda h: "missing"
+    step_integrations(ctx)
+    assert "No coding agents found on PATH" in script.text()

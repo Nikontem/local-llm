@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
 import webbrowser
 from collections.abc import Sequence
@@ -19,7 +20,7 @@ from typing import NoReturn
 import typer
 from rich.console import Console
 
-from . import __version__
+from . import __version__, harnesses
 from .agents import (
     AgentError,
     aider_args,
@@ -39,6 +40,7 @@ from .gguf import GgufError, read_header, refined_estimate
 from .hardware import Machine, detect, total_ram
 from .hub import Hub, HubCache, HubError, free_disk_bytes, hf_cache_dir
 from .integrations import HarnessContext
+from .integrations import codex as codex_integration
 from .integrations import opencode as opencode_integration
 from .logs import current_log, prune_logs, tail_lines
 from .paths import Paths
@@ -84,6 +86,7 @@ err = Console(stderr=True, highlight=False, soft_wrap=True, markup=False)
 # Hooks that tests replace.
 _sleep = time.sleep
 _open_url = webbrowser.open
+_which = shutil.which
 
 
 def _interactive() -> bool:
@@ -1184,8 +1187,107 @@ def _integrate_shell(
     return lines
 
 
-integrate_app = typer.Typer(help="Wire other tools to the router.", rich_markup_mode=None)
+def _help_paragraph(text: str, width: int = 76) -> str:
+    """Pre-wrap one paragraph so Click keeps names like google-antigravity in one piece.
+
+    A paragraph beginning with the backspace marker is printed as written.
+    """
+    return "\b\n" + "\n".join(textwrap.wrap(text, width=width, break_on_hyphens=False))
+
+
+INTEGRATE_HELP = f"""Wire coding agents and other tools to the router.
+
+With no agent named, this shows every agent found on PATH, grouped by whether
+it is configured inside the agent or launched through local-llm, and
+configures the ones you pick.
+
+Codex reads a project-level .codex/config.toml in preference to the one in
+your home directory, so an agent that ignores the local provider inside one
+repository is usually being overridden there.
+
+{_help_paragraph(harnesses.GEMINI_NOTE)}
+
+{_help_paragraph(harnesses.ANTIGRAVITY_NOTE)}
+"""
+
+integrate_app = typer.Typer(
+    help=INTEGRATE_HELP,
+    rich_markup_mode=None,
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
 app.add_typer(integrate_app, name="integrate")
+
+
+@integrate_app.callback()
+def integrate_menu(ctx: typer.Context, yes: bool = typer.Option(
+    False, "-y", "--yes", help="Configure every agent found, without asking."
+)) -> None:
+    """With no agent named, show what is installed and configure what you pick."""
+    if ctx.invoked_subcommand is not None:
+        return
+    st = state()
+    installed, missing = harnesses.detect(_which)
+    context = _harness_context(st, yes=yes)
+
+    def status_of(harness: harnesses.Harness) -> str:
+        return harness.status(context) if harness.status else "missing"
+
+    for line in harnesses.render(installed, missing, status_of):
+        out.print(line)
+    if not st.settings.is_local and harnesses.numbered(installed):
+        out.print("")
+        out.print(
+            f"  Note: {st.settings.host} is not a loopback address, so configuring an"
+            " agent writes that address into its config file, where anything reading"
+            " that file can see it."
+        )
+    rows = harnesses.numbered(installed)
+    chosen: list[harnesses.Harness] = []
+    if rows and yes:
+        chosen = rows
+    elif rows and _interactive():
+        out.print("")
+        answer = typer.prompt(
+            "  Numbers to configure (e.g. 1 3), a for all, n for none", default="a"
+        )
+        try:
+            chosen = harnesses.parse_choice(answer, rows)
+        except ValueError as error:
+            fail(str(error))
+    for harness in chosen:
+        out.print(f"  {harness.title}")
+        try:
+            lines = harness.configure(context) if harness.configure else _launcher_lines(harness)
+        except OSError as error:
+            lines = [f"could not configure {harness.title}: {error}"]
+        for line in lines:
+            out.print(f"    {line}")
+    for harness in installed:
+        if harness.kind == harnesses.INFORMATIONAL:
+            out.print("")
+            out.print(f"  {harness.title}: {harness.note}")
+    extra = [h.alias for h in chosen if h.alias]
+    if extra and (yes or _interactive()):
+        shell = detect_shell()
+        # The agents were already chosen above; their aliases are part of that answer.
+        for line in _integrate_shell(st, shell, aliases=True, yes=True, extra_aliases=extra):
+            out.print(f"  {line}")
+
+
+def _launcher_lines(harness: harnesses.Harness) -> list[str]:
+    """A launcher writes nothing; it only reports how to run it."""
+    alias = f", or the alias {harness.alias[0]}" if harness.alias else ""
+    return [f"run it with:  {harness.summary}{alias}"]
+
+
+@integrate_app.command("codex")
+def integrate_codex_cmd(
+    yes: bool = typer.Option(False, "-y", "--yes", help="Do not ask."),
+) -> None:
+    """Write the local-llm provider and profile into Codex's config.toml."""
+    for line in codex_integration.configure(_harness_context(state(), yes=yes)):
+        out.print(line)
 
 
 @integrate_app.command("opencode")
@@ -1283,8 +1385,17 @@ def setup(
             options, suggested, machine, yes=yes
         ),
         pull=do_pull,
-        integrate_shell=lambda shell: _integrate_shell(st, shell, aliases=True, yes=True),
-        integrate_opencode=lambda: _integrate_opencode(st, agent=True, yes=True),
+        integrate_shell=lambda shell, extra=(): _integrate_shell(
+            st, shell, aliases=True, yes=True, extra_aliases=extra
+        ),
+        harness_status=lambda harness: (
+            harness.status(_harness_context(st, yes=yes)) if harness.status else "missing"
+        ),
+        configure_harness=lambda harness: (
+            harness.configure(_harness_context(st, yes=yes))
+            if harness.configure
+            else _launcher_lines(harness)
+        ),
     )
     raise typer.Exit(run_setup(ctx, use=use, models=list(model)))
 
