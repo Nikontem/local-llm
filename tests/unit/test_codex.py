@@ -11,7 +11,7 @@ def test_paths_default_and_codex_home(tmp_path):
     paths = codex.codex_paths(home=tmp_path, env={})
     assert paths.config_dir == tmp_path / ".codex"
     assert paths.config_file == tmp_path / ".codex" / "config.toml"
-    assert paths.backup == tmp_path / ".codex" / "config.toml.bak"
+    assert paths.backup == tmp_path / ".codex" / "config.toml.local-llm.bak"
     moved = codex.codex_paths(home=tmp_path, env={"CODEX_HOME": str(tmp_path / "elsewhere")})
     assert moved.config_file == tmp_path / "elsewhere" / "config.toml"
 
@@ -240,3 +240,51 @@ def test_backup_never_writes_through_a_symlink(tmp_path):
     assert elsewhere.read_text() == "do not touch me\n", "the link target was overwritten"
     assert not paths.backup.is_symlink()
     assert paths.backup.read_text() == EXISTING
+
+
+def test_our_backup_is_named_so_it_can_never_be_a_persons_own(tmp_path):
+    """Uninstall deletes our backup. A hand-made config.toml.bak must survive it."""
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True)
+    paths.config_file.write_text(EXISTING)
+    theirs = paths.config_file.with_name("config.toml.bak")
+    theirs.write_text("my own backup, from before local-llm existed\n")
+
+    codex.write(paths, codex.provider_table(Settings()), codex.profile_table("small"))
+    assert paths.backup.read_text() == EXISTING
+    assert theirs.read_text() == "my own backup, from before local-llm existed\n"
+
+    lines = codex.removal_lines(paths)
+    assert any("removed" in line for line in lines)
+    assert not paths.backup.exists(), "our own backup goes with the tables"
+    assert theirs.read_text() == "my own backup, from before local-llm existed\n"
+
+
+def test_a_backup_survives_a_removal_that_rewrote_nothing(tmp_path):
+    """Nothing of ours in the file means nothing is written, so nothing is deleted."""
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True)
+    paths.config_file.write_text(EXISTING)
+    paths.backup.write_text("an older copy\n")
+    assert codex.removal_lines(paths) == []
+    assert paths.backup.read_text() == "an older copy\n"
+
+
+def test_a_symlinked_config_stays_a_symlink(tmp_path):
+    """A config.toml linked into a dotfiles repository must be written through, not replaced."""
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    real = dotfiles / "codex-config.toml"
+    real.write_text(EXISTING)
+    paths.config_file.symlink_to(real)
+
+    codex.write(paths, codex.provider_table(Settings()), codex.profile_table("small"))
+
+    assert paths.config_file.is_symlink(), "the link was replaced by a regular file"
+    assert paths.config_file.resolve() == real.resolve()
+    assert "[model_providers.local-llm]" in real.read_text(), "the dotfiles copy is stale"
+    assert "# my codex config" in real.read_text()
+    assert not list(dotfiles.glob(".config.toml.*")), "no temporary file left behind"
+    assert paths.backup.read_text() == EXISTING, "the backup sits beside the link"

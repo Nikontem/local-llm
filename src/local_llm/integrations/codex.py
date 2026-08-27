@@ -21,6 +21,7 @@ PROVIDER_ID = "local-llm"
 WIRE_API = "responses"  # Codex dropped the older "chat" wire format in February 2026
 KEY_VARIABLE = "LOCAL_LLM_API_KEY"
 PARENTS = ("model_providers", "profiles")
+BACKUP_SUFFIX = ".local-llm.bak"
 EXPERIMENTAL = (
     "experimental: needs a recent llama.cpp build; tool calls may fail on older ones"
 )
@@ -33,7 +34,9 @@ class CodexPaths:
 
     @property
     def backup(self) -> Path:
-        return self.config_file.with_name(self.config_file.name + ".bak")
+        """Our own name, not the plain .bak somebody may have made by hand: uninstall
+        deletes this file, and it must never be able to delete a person's own copy."""
+        return self.config_file.with_name(self.config_file.name + BACKUP_SUFFIX)
 
 
 def codex_paths(
@@ -174,15 +177,21 @@ def current_render(paths: CodexPaths) -> str:
 
 def _atomic_write(paths: CodexPaths, text: str) -> None:
     paths.config_dir.mkdir(parents=True, exist_ok=True)
+    # People commonly symlink ~/.codex/config.toml into a dotfiles repository. Writing
+    # to the link path would replace the link with a regular file and leave the dotfiles
+    # copy holding the old content, so the write goes through to what the link points at.
+    # The temporary file has to sit beside that destination for os.replace to work
+    # across a filesystem boundary, and the backup stays where the link is.
+    target = paths.config_file.resolve() if paths.config_file.is_symlink() else paths.config_file
     if paths.config_file.is_file():
         if paths.backup.is_symlink():
             paths.backup.unlink()  # never write through a link somebody put there
         shutil.copy2(paths.config_file, paths.backup)
-    handle, temporary = tempfile.mkstemp(dir=paths.config_dir, prefix=".config.toml.")
+    handle, temporary = tempfile.mkstemp(dir=target.parent, prefix=".config.toml.")
     try:
         with os.fdopen(handle, "w") as stream:
             stream.write(text)
-        os.replace(temporary, paths.config_file)
+        os.replace(temporary, target)
     finally:
         # A failed write must not litter ~/.codex with hidden half-files.
         if os.path.exists(temporary):
@@ -295,4 +304,14 @@ def removal_lines(paths: CodexPaths) -> list[str]:
         return [f"could not update {paths.config_file}: {error}"]
     if not removed:
         return []
-    return [f"removed {', '.join(removed)} from {paths.config_file}"]
+    lines = [f"removed {', '.join(removed)} from {paths.config_file}"]
+    # drop() rewrote the file, so the backup beside it is the one we just made.
+    # Nothing above this point deletes it, which is why a file left untouched -
+    # unparsable, or holding nothing of ours - keeps whatever backup it had.
+    if paths.backup.exists():
+        try:
+            paths.backup.unlink()
+            lines.append(f"deleted {paths.backup}")
+        except OSError as error:
+            lines.append(f"could not delete {paths.backup}: {error}")
+    return lines

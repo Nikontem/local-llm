@@ -264,17 +264,9 @@ def remove_integrations(inv: Inventory, *, restore_retired: bool = False) -> lis
                 " entry from it by hand"
             )
     if inv.codex_config:
-        cx = paths_for(inv.codex_config)
-        lines.extend(removal_lines(cx))
-        # drop() writes a fresh .bak as it edits, so the path is resolved again here
-        # rather than taken from the inventory: a file with no backup at inventory
-        # time still gets one, and it must go too.
-        if cx.backup.exists():
-            try:
-                cx.backup.unlink()
-                lines.append(f"deleted {cx.backup}")
-            except OSError as error:
-                lines.append(f"could not delete {cx.backup}: {error}")
+        # removal_lines() deletes the backup it made itself, and only when it actually
+        # rewrote the file: a config left untouched keeps whatever backup it had.
+        lines.extend(removal_lines(paths_for(inv.codex_config)))
     rc_files = {*inv.rc_with_block, *inv.rc_with_bash_source}
     if restore_retired:
         rc_files.update(inv.rc_with_retired)
