@@ -3,6 +3,7 @@ import subprocess
 from local_llm.doctor import BREW_INSTALL, Check, Env, port_in_use, run_checks
 from local_llm.hub import TokenStatus
 from local_llm.paths import Paths
+from local_llm.router import API_KEY_VARIABLE
 from local_llm.settings import Settings
 
 
@@ -236,3 +237,22 @@ def test_agents_check_reports_how_each_provider_is_configured(tmp_path):
     codex.write(codex.codex_paths(home=tmp_path, env={}), codex.provider_table(Settings()), None)
     detail = by_name(run_checks(paths, Settings(), env=env))["agents"].detail
     assert "OpenAI Codex CLI (configured)" in detail
+
+
+def test_doctor_says_which_way_the_api_key_reaches_llama_server(tmp_path):
+    """Whether it goes in the environment or on the command line is not the person's guess."""
+    paths = healthy_paths(tmp_path)
+
+    silent = by_name(run_checks(paths, Settings(), env=mac_env()))
+    assert "api key" not in silent, "there is no key to protect"
+
+    modern = mac_env()
+    modern.run = fake_run({
+        ("/opt/homebrew/bin/llama-server", "--help"):
+            f"... --models-preset PATH ... --api-key KEY (env: {API_KEY_VARIABLE}) ...\n",
+    })
+    good = by_name(run_checks(paths, Settings(api_key="sk-secret"), env=modern))
+    assert good["api key"].status == "ok" and API_KEY_VARIABLE in good["api key"].detail
+
+    old = by_name(run_checks(paths, Settings(api_key="sk-secret"), env=mac_env()))
+    assert old["api key"].status == "warn" and "ps" in old["api key"].detail

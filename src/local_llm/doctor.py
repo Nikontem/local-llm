@@ -14,6 +14,7 @@ from pathlib import Path
 from . import hub
 from .paths import Paths
 from .preset import Preset, PresetError
+from .router import API_KEY_VARIABLE
 from .settings import Settings
 
 BREW_INSTALL = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
@@ -148,6 +149,21 @@ def run_checks(
                 "router support", "fail",
                 "this llama-server has no --models-preset; router presets need a build "
                 "from December 2025 or later",
+                fix="brew upgrade llama.cpp" if brew else LINUX_LLAMA_HELP,
+            ))
+        # Only worth a line when there is a key to protect. Which of the two ways it
+        # travels is decided by this same help text over in Router, so the person can
+        # see here which one their build gets.
+        if settings.api_key and API_KEY_VARIABLE in help_text:
+            checks.append(Check(
+                "api key", "ok",
+                f"passed to llama-server in {API_KEY_VARIABLE}, not on its command line",
+            ))
+        elif settings.api_key:
+            checks.append(Check(
+                "api key", "warn",
+                f"this llama-server does not read {API_KEY_VARIABLE}, so the key goes on its"
+                " command line, where any program running as you can read it with ps",
                 fix="brew upgrade llama.cpp" if brew else LINUX_LLAMA_HELP,
             ))
     elif brew:

@@ -26,6 +26,7 @@ class FakeBackend:
         self.procs: dict[int, FakeProc] = {}
         self.next_pid = 1000
         self.spawned: list[tuple[list[str], Path]] = []
+        self.spawn_env: list[dict] = []
         self.terminated: list[int] = []
         self.killed: list[int] = []
         self.stubborn: set[int] = set()      # pids that ignore terminate()
@@ -84,10 +85,11 @@ class FakeBackend:
         proc = self.procs.get(pid)
         return not (proc and proc.alive)
 
-    def spawn(self, args: list[str], log_path: Path) -> int:
+    def spawn(self, args: list[str], log_path: Path, env=None) -> int:
         pid = self.next_pid
         self.next_pid += 1
         self.spawned.append((list(args), log_path))
+        self.spawn_env.append(dict(env or {}))
         self.add(pid, args, listening=self.spawn_listening)
         if self.spawn_dies:
             self.procs[pid].alive = False

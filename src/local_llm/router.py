@@ -13,7 +13,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -26,6 +26,25 @@ ASLEEP_RSS = 500 * 1024 * 1024  # below this a child has released its weights
 START_TIMEOUT = 15.0
 STOP_TIMEOUT = 15.0
 _POLL = 0.5
+_HELP_TIMEOUT = 10.0
+#: The variable llama-server reads the API key from. Passing the key as --api-key
+#: instead puts it in the process's arguments, where `ps` shows it to every other
+#: program running as this user. The name is llama.cpp's own: --api-key is one of the
+#: few options whose variable does not carry the LLAMA_ARG_ prefix the others use.
+API_KEY_VARIABLE = "LLAMA_API_KEY"
+
+
+def help_text(binary: str | None) -> str:
+    """Everything `binary --help` prints, or nothing at all when it cannot be asked."""
+    if not binary:
+        return ""
+    try:
+        result = subprocess.run(
+            [binary, "--help"], capture_output=True, text=True, timeout=_HELP_TIMEOUT
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return (result.stdout or "") + (result.stderr or "")
 
 
 class RouterError(Exception):
@@ -47,7 +66,9 @@ class ProcessBackend(Protocol):
     def terminate(self, pid: int) -> None: ...
     def kill(self, pid: int) -> None: ...
     def wait(self, pid: int, timeout: float) -> bool: ...
-    def spawn(self, args: list[str], log_path: Path) -> int: ...
+    def spawn(
+        self, args: list[str], log_path: Path, env: Mapping[str, str] | None = None
+    ) -> int: ...
 
 
 def is_llama_server(cmdline: list[str]) -> bool:
@@ -134,7 +155,9 @@ class PsutilBackend:
         except psutil.TimeoutExpired:
             return False
 
-    def spawn(self, args: list[str], log_path: Path) -> int:
+    def spawn(
+        self, args: list[str], log_path: Path, env: Mapping[str, str] | None = None
+    ) -> int:
         with open(log_path, "ab") as log:
             proc = subprocess.Popen(
                 args,
@@ -142,6 +165,7 @@ class PsutilBackend:
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
+                env=None if env is None else {**os.environ, **env},
             )
         return proc.pid
 
@@ -192,6 +216,7 @@ class Router:
         binary: str | None = None,
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] = lambda message: None,
+        help_text: Callable[[str | None], str] = help_text,
     ) -> None:
         self.paths = paths
         self.settings = settings
@@ -200,8 +225,22 @@ class Router:
         self.binary = binary if binary is not None else shutil.which("llama-server")
         self._sleep = sleep
         self._log = log
+        self._help_text = help_text
+        self._reads_key_from_env: bool | None = None
 
     # ------------------------------------------------------------ arguments
+
+    def reads_key_from_environment(self) -> bool:
+        """Does this llama-server take the API key from the environment?
+
+        A build old enough not to know the variable would start with no authentication
+        at all if the key were only put there, which is worse than showing it to `ps`,
+        so the binary is asked rather than assumed. The answer cannot change while this
+        process runs, so it is asked once and kept.
+        """
+        if self._reads_key_from_env is None:
+            self._reads_key_from_env = API_KEY_VARIABLE in self._help_text(self.binary)
+        return self._reads_key_from_env
 
     def server_args(self) -> list[str]:
         s = self.settings
@@ -214,9 +253,18 @@ class Router:
             "--models-autoload",
             "--ui" if s.ui else "--no-ui",
         ]
-        if s.api_key:
+        if s.api_key and not self.reads_key_from_environment():
+            # The fallback, and the reason doctor reports which one is in effect: on
+            # this build the key has nowhere else to go. See server_env.
             args += ["--api-key", s.api_key]
         return args
+
+    def server_env(self) -> dict[str, str]:
+        """What to add to the spawned server's environment, which is usually nothing."""
+        s = self.settings
+        if s.api_key and self.reads_key_from_environment():
+            return {API_KEY_VARIABLE: s.api_key}
+        return {}
 
     def check_preconditions(self) -> None:
         if not self.binary:
@@ -281,7 +329,7 @@ class Router:
             return StartResult(existing, None, already_running=True)
         self.paths.ensure_state_dirs()
         log_file = new_run_log(self.paths.log_dir)
-        pid = self.backend.spawn(self.server_args(), log_file)
+        pid = self.backend.spawn(self.server_args(), log_file, self.server_env())
         self.paths.pid_file.write_text(f"{pid}\n")
         self.paths.pid_file.chmod(0o600)
         self.write_ui_state(self.settings.ui)
@@ -297,7 +345,8 @@ class Router:
 
     def run_foreground(self) -> int:
         self.check_preconditions()
-        return subprocess.call(self.server_args())
+        extra = self.server_env()
+        return subprocess.call(self.server_args(), env={**os.environ, **extra} if extra else None)
 
     # ------------------------------------------------------------ stop
 
