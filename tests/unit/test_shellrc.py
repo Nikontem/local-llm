@@ -3,10 +3,14 @@ from local_llm.shellrc import (
     MARK_BEGIN,
     MARK_END,
     RETIRED_PREFIX,
+    TOOL_ALIAS,
     alias_lines,
+    alias_name,
+    block_lines,
     block_text,
     completion_script,
     detect_shell,
+    merge_alias_lines,
     old_source_lines,
     rc_file,
     remove_block,
@@ -25,13 +29,33 @@ def test_detect_shell_and_rc_file(tmp_path):
     assert rc_file("fish", tmp_path) == tmp_path / ".config" / "fish" / "config.fish"
 
 
-def test_alias_lines_per_shell():
-    assert alias_lines("zsh") == [
+def test_alias_lines_take_the_pairs_they_are_given():
+    pairs = [("local_llm", "local-llm"), ("claude_local", "local-llm claude")]
+    assert alias_lines("zsh", pairs) == [
         "alias local_llm='local-llm'",
         "alias claude_local='local-llm claude'",
-        "alias copilot_local='local-llm copilot'",
     ]
-    assert alias_lines("fish")[0] == "alias local_llm 'local-llm'"
+    assert alias_lines("fish", pairs)[0] == "alias local_llm 'local-llm'"
+    assert TOOL_ALIAS == ("local_llm", "local-llm")
+
+
+def test_aliases_are_add_only():
+    existing = ["alias local_llm='local-llm'", "alias copilot_local='local-llm copilot'"]
+    wanted = ["alias local_llm='local-llm'", "alias claude_local='local-llm claude'"]
+    assert merge_alias_lines(existing, wanted) == [
+        "alias local_llm='local-llm'",
+        "alias copilot_local='local-llm copilot'",
+        "alias claude_local='local-llm claude'",
+    ]
+    assert alias_name("alias claude_local='local-llm claude'") == "claude_local"
+    assert alias_name("alias qwen_local 'local-llm qwen'") == "qwen_local"
+    assert alias_name("export A=1") is None
+
+
+def test_block_lines_reads_back_what_is_inside_the_markers():
+    text = upsert_block("export A=1\n", ["alias x='y'", "alias z='w'"])
+    assert block_lines(text) == ["alias x='y'", "alias z='w'"]
+    assert block_lines("export A=1\n") == []
 
 
 def test_upsert_block_replaces_in_place_and_appends_once():

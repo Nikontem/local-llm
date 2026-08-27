@@ -55,7 +55,7 @@ def test_completion_install_writes_block_and_retires_old_line(harness):
     assert result.exit_code == 0, result.output
     assert written == ["zsh"]
     text = rc.read_text()
-    assert MARK_BEGIN in text and "alias claude_local='local-llm claude'" in text
+    assert MARK_BEGIN in text and "alias local_llm='local-llm'" in text
     assert RETIRED_PREFIX in text and "retired 1 old line" in result.output
     assert "/fake/_zsh" in result.output
     again = h.run("completion", "install", "--shell", "zsh", "--no-aliases", "--yes")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import platform
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 MARK_BEGIN = "# >>> local-llm >>>"
@@ -15,11 +15,8 @@ SHELLS = ("zsh", "bash", "fish")
 PROG_NAME = "local-llm"
 COMPLETE_VAR = "_LOCAL_LLM_COMPLETE"
 _OLD_SOURCE = re.compile(r"^\s*(\[\[.*\]\]\s*&&\s*)?(source|\.)\s+.*local-llm/local_llm\.zsh")
-_ALIASES = [
-    ("local_llm", "local-llm"),
-    ("claude_local", "local-llm claude"),
-    ("copilot_local", "local-llm copilot"),
-]
+TOOL_ALIAS = ("local_llm", "local-llm")
+_ALIAS_NAME = re.compile(r"^\s*alias\s+([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def detect_shell(env: Mapping[str, str] | None = None, system: str | None = None) -> str:
@@ -39,10 +36,15 @@ def rc_file(shell: str, home: Path) -> Path:
     return home / ".bashrc"
 
 
-def alias_lines(shell: str) -> list[str]:
+def alias_lines(shell: str, aliases: Sequence[tuple[str, str]]) -> list[str]:
     if shell == "fish":
-        return [f"alias {name} '{command}'" for name, command in _ALIASES]
-    return [f"alias {name}='{command}'" for name, command in _ALIASES]
+        return [f"alias {name} '{command}'" for name, command in aliases]
+    return [f"alias {name}='{command}'" for name, command in aliases]
+
+
+def alias_name(line: str) -> str | None:
+    match = _ALIAS_NAME.match(line)
+    return match.group(1) if match else None
 
 
 def block_text(lines: list[str]) -> str:
@@ -76,6 +78,21 @@ def upsert_block(text: str, lines: list[str]) -> str:
 def remove_block(text: str) -> str:
     span = _block_span(text)
     return text if span is None else text[: span[0]] + text[span[1]:]
+
+
+def block_lines(text: str) -> list[str]:
+    """The lines inside our marked block, or none when there is no block."""
+    span = _block_span(text)
+    if span is None:
+        return []
+    inner = text[span[0] : span[1]].splitlines()
+    return [line for line in inner[1:-1]]
+
+
+def merge_alias_lines(existing: list[str], wanted: list[str]) -> list[str]:
+    """Add-only: an alias already there is never dropped, whatever we were asked for."""
+    have = {alias_name(line) for line in existing}
+    return [*existing, *(line for line in wanted if alias_name(line) not in have)]
 
 
 def old_source_lines(text: str) -> list[int]:

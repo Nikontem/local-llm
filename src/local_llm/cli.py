@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import webbrowser
+from collections.abc import Sequence
 from dataclasses import asdict
 from importlib import resources
 from pathlib import Path
@@ -49,9 +50,12 @@ from .sections import build_section, local_name, section_name
 from .settings import load_settings
 from .setup import Io, SetupContext, run_setup
 from .shellrc import (
+    TOOL_ALIAS,
     alias_lines,
+    block_lines,
     detect_shell,
     install_completion,
+    merge_alias_lines,
     rc_file,
     remove_block,
     retire_old_source,
@@ -1145,22 +1149,37 @@ def _integrate_opencode(st: State, *, agent: bool, yes: bool) -> list[str]:
     return opencode_integration.configure(_harness_context(st, yes=yes), agent=agent)
 
 
-def _integrate_shell(st: State, shell: str, *, aliases: bool, yes: bool) -> list[str]:
+def _integrate_shell(
+    st: State,
+    shell: str,
+    *,
+    aliases: bool,
+    yes: bool,
+    extra_aliases: Sequence[tuple[str, str]] = (),
+) -> list[str]:
     lines: list[str] = []
     completion_path = install_completion(shell)
     lines.append(f"{shell} completion written to {completion_path}")
     rc = rc_file(shell, Path.home())
     text = rc.read_text() if rc.is_file() else ""
     updated, retired = retire_old_source(text)
-    updated = upsert_block(updated, alias_lines(shell)) if aliases else remove_block(updated)
+    if aliases:
+        wanted = alias_lines(shell, [TOOL_ALIAS, *extra_aliases])
+        merged = merge_alias_lines(block_lines(updated), wanted)
+        updated = upsert_block(updated, merged)
+    else:
+        updated = remove_block(updated)
     if updated != text:
         if yes or typer.confirm(f"Update {rc}?", default=True):
             rc.parent.mkdir(parents=True, exist_ok=True)
             rc.write_text(updated)
             if retired:
                 lines.append(f"retired {retired} old line(s) that sourced local_llm.zsh in {rc}")
-            added_or_removed = "added to" if aliases else "removed from"
-            lines.append(f"aliases local_llm, claude_local, copilot_local {added_or_removed} {rc}")
+            if aliases:
+                names = ", ".join(name for name, _ in [TOOL_ALIAS, *extra_aliases])
+                lines.append(f"aliases {names} added to {rc}")
+            else:
+                lines.append(f"aliases removed from {rc}")
     lines.append(f"open a new shell, or run:  source {rc}")
     return lines
 
@@ -1189,7 +1208,9 @@ def completion_install_cmd(
         None, "--shell", help="zsh, bash or fish (default: detected)."
     ),
     aliases: bool = typer.Option(
-        True, "--aliases/--no-aliases", help="Add local_llm, claude_local, copilot_local."
+        True,
+        "--aliases/--no-aliases",
+        help="Add the local_llm alias and one per configured agent.",
     ),
     yes: bool = typer.Option(False, "-y", "--yes", help="Do not ask."),
 ) -> None:
