@@ -19,6 +19,7 @@ CONFIG_CANDIDATES = ("opencode.jsonc", "opencode.json", "config.json")
 #: Every model this tool configures is served by the router, which the plugin registers
 #: with opencode under this provider name. A model id without it names somebody else's.
 MODEL_PREFIX = "llamacpp/"
+#: The last resort for a config with comments in it, which no parser will read.
 _TINY_MODEL = re.compile(r'"tiny"\s*:\s*\{[^{}]*?"model"\s*:\s*"([^"]+)"', re.DOTALL)
 
 
@@ -112,9 +113,30 @@ def agent_snippet(agent: dict, name: str = "tiny") -> str:
     return f'"agent": {json.dumps({name: agent}, indent=2)}'
 
 
+def _model_of(data: object) -> str | None:
+    """agent.tiny.model out of a parsed config, giving up at the first thing of the wrong shape."""
+    for key in ("agent", "tiny", "model"):
+        if not isinstance(data, dict):
+            return None
+        data = data.get(key)
+    return data if isinstance(data, str) else None
+
+
 def current_tiny_model(text: str) -> str | None:
-    match = _TINY_MODEL.search(text)
-    return match.group(1) if match else None
+    """The model the tiny agent points at, or None when the config has no tiny agent.
+
+    A strict JSON file is parsed. A text match cannot tell the "tiny" under agent from
+    a "tiny" under provider, and its character class stops at the first nested object,
+    so it reads nothing at all from the shape people actually write - where "model"
+    comes after "tools". A file with comments in it cannot be parsed, and nothing is
+    ever written to one, so there the match is what there is.
+    """
+    try:
+        data = json.loads(text or "{}")
+    except ValueError:
+        match = _TINY_MODEL.search(text)
+        return match.group(1) if match else None
+    return _model_of(data)
 
 
 def foreign_tiny_model(text: str) -> str | None:

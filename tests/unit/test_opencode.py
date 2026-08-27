@@ -202,6 +202,72 @@ def test_a_tiny_agent_of_ours_is_updated_without_a_question(tmp_path):
     assert json.loads(ctx.config.read_text())["agent"]["tiny"]["model"] == "llamacpp/small"
 
 
+# The shape people actually write: the model sits after a nested object.
+NESTED = {
+    "$schema": "https://opencode.ai/config.json",
+    "agent": {"tiny": {"tools": {"write": False}, "model": "anthropic/claude-haiku-4-5"}},
+}
+
+
+def test_a_model_after_a_nested_object_is_still_read(tmp_path):
+    """A text match stops at the first nested brace, so it used to read nothing here."""
+    from local_llm.integrations import opencode
+
+    text = json.dumps(NESTED, indent=2) + "\n"
+    assert current_tiny_model(text) == "anthropic/claude-haiku-4-5"
+    assert foreign_tiny_model(text) == "anthropic/claude-haiku-4-5"
+
+    ctx = make_ctx(tmp_path, yes=True, config=text)
+    lines = opencode.configure(ctx)
+
+    assert json.loads(ctx.config.read_text()) == NESTED, "somebody's paid model was replaced"
+    assert any("your own" in line and "anthropic/claude-haiku-4-5" in line for line in lines)
+    assert ctx.asked == [], "yes mode asks nothing"
+
+
+def test_a_tiny_key_under_another_parent_never_decides_ownership(tmp_path):
+    """Anything else called tiny - a provider, say - is not the agent in question."""
+    from local_llm.integrations import opencode
+
+    config = {
+        "provider": {"tiny": {"model": "llamacpp/small"}},
+        "agent": {"tiny": {"mode": "subagent", "model": "anthropic/claude-haiku-4-5"}},
+    }
+    text = json.dumps(config, indent=2) + "\n"
+    assert current_tiny_model(text) == "anthropic/claude-haiku-4-5"
+    assert foreign_tiny_model(text) == "anthropic/claude-haiku-4-5"
+
+    ctx = make_ctx(tmp_path, yes=True, config=text)
+    lines = opencode.configure(ctx)
+
+    assert json.loads(ctx.config.read_text()) == config
+    assert any("your own" in line for line in lines)
+
+
+def test_our_own_agent_is_updated_even_when_the_model_sits_after_a_nested_object(tmp_path):
+    from local_llm.integrations import opencode
+
+    ours = {"agent": {"tiny": {"tools": {"write": False}, "model": "llamacpp/retired"}}}
+    ctx = make_ctx(tmp_path, yes=True, config=json.dumps(ours, indent=2) + "\n")
+
+    lines = opencode.configure(ctx)
+
+    assert json.loads(ctx.config.read_text())["agent"]["tiny"]["model"] == "llamacpp/small"
+    assert any("tiny agent set to llamacpp/small" in line for line in lines)
+
+
+def test_a_config_that_is_not_strict_json_still_falls_back_to_the_text_match():
+    """Nothing is ever written to a file with comments in it, so a match is enough there."""
+    assert foreign_tiny_model('{\n  // mine\n  "agent": {"tiny": {"model": "anthropic/x"}}\n}') == (
+        "anthropic/x"
+    )
+    assert foreign_tiny_model("{ not json at all") is None
+    assert foreign_tiny_model('{"agent": []}') is None
+    assert foreign_tiny_model('{"agent": {"tiny": "a string"}}') is None
+    assert foreign_tiny_model('{"agent": {"tiny": {"model": 3}}}') is None
+    assert foreign_tiny_model("[]") is None
+
+
 def test_the_config_is_copied_aside_and_replaced_in_one_step(tmp_path):
     """A crash or a full disk mid-write used to truncate the whole opencode config."""
     from local_llm.integrations import opencode
