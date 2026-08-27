@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import NoReturn
 
 from .preset import Preset
-from .settings import Settings
+from .settings import ENV_KEYS, Settings
 
 
 class AgentError(Exception):
@@ -94,9 +94,22 @@ def copilot_env(
     return env
 
 
+#: What these lines say instead of the key itself. The key can only ever have come from
+#: this variable - it is the one setting settings.toml will not hold - so it is already
+#: in the environment of any shell that would run this output, and pointing at it makes
+#: `eval "$(local-llm env)"` work exactly as before.
+KEY_REFERENCE = f'"${ENV_KEYS["api_key"]}"'
+
+
 def export_lines(
     model: str, preset: Preset, settings: Settings, preset_path: Path, shell: str = "zsh"
 ) -> str:
+    """Shell lines pointing any OpenAI- or Anthropic-style tool at the router.
+
+    They are meant to be read by a person and pasted around, so they end up in
+    scrollback, in shell history and in bug reports. No line reproduces the API key's
+    value: where there is one, the variable holding it is named instead.
+    """
     values = {
         "LOCAL_LLM_OPENAI_BASE_URL": settings.openai_base_url,
         "LOCAL_LLM_ANTHROPIC_BASE_URL": settings.anthropic_base_url,
@@ -105,9 +118,17 @@ def export_lines(
         "OPENAI_API_KEY": settings.api_key or "dummy",
         **claude_env(model, preset, settings),
     }
+
+    def written(value: str) -> str:
+        # A quoted reference, not a quoted value: shlex.quote would put single quotes
+        # around it and the shell would hand the tool the variable's name.
+        if settings.api_key and value == settings.api_key:
+            return KEY_REFERENCE
+        return shlex.quote(value)
+
     if shell == "fish":
-        return "".join(f"set -gx {key} {shlex.quote(value)}\n" for key, value in values.items())
-    return "".join(f"export {key}={shlex.quote(value)}\n" for key, value in values.items())
+        return "".join(f"set -gx {key} {written(value)}\n" for key, value in values.items())
+    return "".join(f"export {key}={written(value)}\n" for key, value in values.items())
 
 
 def exec_with_env(program: str, args: list[str], extra_env: dict[str, str]) -> NoReturn:

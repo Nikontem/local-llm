@@ -100,8 +100,30 @@ def test_export_lines_for_shells():
     fish = export_lines("big", PRESET, Settings(), Path("/c/models.ini"), shell="fish")
     assert "set -gx ANTHROPIC_MODEL big\n" in fish
     quoted = export_lines("big", PRESET, Settings(api_key="a b"), Path("/c/x y.ini"))
-    assert "export OPENAI_API_KEY='a b'\n" in quoted
     assert "export LOCAL_LLM_PRESET='/c/x y.ini'\n" in quoted
+
+
+def test_the_key_is_referenced_not_reproduced():
+    """These lines end up in scrollback, shell history and pasted terminal output.
+
+    The key can only ever have come from LOCAL_LLM_API_KEY in the environment - it is
+    the one setting settings.toml will not hold - so the variable is already there to
+    point at, and eval of this output still works.
+    """
+    secret = Settings(api_key="sk-do-not-print-me")
+    zsh = export_lines("big", PRESET, secret, Path("/c/models.ini"), shell="zsh")
+
+    assert "sk-do-not-print-me" not in zsh
+    assert 'export OPENAI_API_KEY="$LOCAL_LLM_API_KEY"\n' in zsh
+    assert 'export ANTHROPIC_API_KEY="$LOCAL_LLM_API_KEY"\n' in zsh
+
+    fish = export_lines("big", PRESET, secret, Path("/c/models.ini"), shell="fish")
+
+    assert "sk-do-not-print-me" not in fish
+    assert 'set -gx OPENAI_API_KEY "$LOCAL_LLM_API_KEY"\n' in fish
+
+    plain = export_lines("big", PRESET, Settings(), Path("/c/models.ini"))
+    assert "export OPENAI_API_KEY=dummy\n" in plain, "no key, nothing to hide"
 
 
 def test_exec_with_env_replaces_process(monkeypatch):

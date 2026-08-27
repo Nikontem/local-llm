@@ -303,7 +303,18 @@ it, and an alias is offered.
   `OPENAI_API_KEY` and `OPENAI_MODEL`, all three of which Qwen Code needs
   before it will use an OpenAI-compatible endpoint at all. Alias `qwen_local`.
 - **`local-llm env [MODEL] [--shell zsh|bash|fish]`** — prints the `export`
-  lines for both APIs, for any tool not listed here.
+  lines for both APIs, for any tool not listed here. Run it through your
+  shell with `eval "$(local-llm env)"`.
+
+  These lines are meant to be read and pasted around, so none of them
+  contains your API key. Where a key is set, they say
+  `export OPENAI_API_KEY="$LOCAL_LLM_API_KEY"` — a reference to the variable
+  you already have, not a copy of its value — so the key stays out of your
+  scrollback, your shell history and anything you paste into a bug report.
+  `eval` still gives the tool the real key. This works because the key can
+  only ever come from `LOCAL_LLM_API_KEY` in your environment: it is the one
+  setting `settings.toml` deliberately will not hold. With no key set, the
+  lines say `dummy`, which is what a router that asks for no key expects.
 
 **Google's agents cannot be pointed at the router.** Gemini CLI has no setting
 for an OpenAI-compatible endpoint — the feature request was closed and its
