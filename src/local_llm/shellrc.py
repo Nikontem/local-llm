@@ -47,8 +47,17 @@ def alias_name(line: str) -> str | None:
     return match.group(1) if match else None
 
 
-def block_text(lines: list[str]) -> str:
-    return "\n".join([MARK_BEGIN, *lines, MARK_END]) + "\n"
+def line_ending(text: str) -> str:
+    """The terminator this file already uses, so anything added to it matches.
+
+    A file saved on Windows, or kept in a dotfiles repository that normalises to CRLF,
+    should not come back with our lines ending differently from every other line.
+    """
+    return "\r\n" if "\r\n" in text else "\n"
+
+
+def block_text(lines: list[str], ending: str = "\n") -> str:
+    return ending.join([MARK_BEGIN, *lines, MARK_END]) + ending
 
 
 def _markers(text: str) -> list[tuple[str, int, int]]:
@@ -158,7 +167,8 @@ def upsert_block(text: str, lines: list[str]) -> str:
     """
     if marker_problem(text) is not None:
         return text
-    block = block_text(lines)
+    ending = line_ending(text)
+    block = block_text(lines, ending)
     spans = _block_spans(text)
     if spans:
         # The first one keeps its place in the file; any others are dropped, so a file
@@ -172,7 +182,12 @@ def upsert_block(text: str, lines: list[str]) -> str:
         return "".join(pieces)
     if not text:
         return block
-    separator = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+    if text.endswith(ending * 2):
+        separator = ""
+    elif text.endswith(ending):
+        separator = ending
+    else:
+        separator = ending * 2
     return text + separator + block
 
 
@@ -209,7 +224,11 @@ def shadowed_aliases(text: str, names: Sequence[str]) -> list[tuple[str, str]]:
     offset = 0
     for line in text.splitlines(keepends=True):
         name = alias_name(line)
-        if name in wanted and not (begin <= offset < end):
+        # Only a line that starts at the left margin. An indented one is almost always
+        # inside a function body, where it defines nothing until the function is called,
+        # and warning about an alias that is not really there is worse than saying
+        # nothing about an unusually indented one that is.
+        if name in wanted and not line[:1].isspace() and not (begin <= offset < end):
             winners[name] = "ours" if offset < begin else "theirs"
         offset += len(line)
     return [(name, winners[name]) for name in names if name in winners]

@@ -1169,14 +1169,38 @@ def _integrate_shell(
     extra_aliases: Sequence[tuple[str, str]] = (),
 ) -> list[str]:
     rc = rc_file(shell, Path.home())
+    refusal = _rc_refusal(rc)
+    if refusal is not None:
+        # Shell completion goes no further either. typer's installer appends its own
+        # lines to this same rc file, reading and rewriting it with no guard of any
+        # kind, so letting it run would rewrite the very file we have just said we
+        # will not touch - and on a file that is not UTF-8 it raises instead.
+        return [refusal, f"{shell} completion was not installed either: it appends to {rc}"]
     lines = _alias_block(rc, shell, aliases=aliases, yes=yes, extra_aliases=extra_aliases)
-    # Last, and not first: typer's installer appends its own two lines to this same rc
-    # file, so running it before the block work above made a refusal there report that
-    # the file was left exactly as it is moments after it had grown.
-    completion_path = install_completion(shell)
-    lines.append(f"{shell} completion written to {completion_path}")
+    # Last, and not first: the installer appends to the rc file, so running it before
+    # the block work above made the output describe a file as it had been a moment ago.
+    try:
+        completion_path = install_completion(shell)
+    except (OSError, UnicodeDecodeError) as error:
+        lines.append(f"could not install {shell} completion: {error}")
+    else:
+        lines.append(f"{shell} completion written to {completion_path}")
     lines.append(f"open a new shell, or run:  source {rc}")
     return lines
+
+
+def _rc_refusal(rc: Path) -> str | None:
+    """The one line to print instead of touching this rc file, or None when it is fit to edit.
+
+    Asked before anything writes, because more than one thing writes: our own marked
+    block, and the shell completion installer, which has no guards of its own.
+    """
+    try:
+        text = rc.read_text(encoding="utf-8") if rc.is_file() else ""
+    except UnicodeDecodeError:
+        return encoding_warning(rc)
+    problem = marker_problem(text)
+    return None if problem is None else marker_warning(rc, problem)
 
 
 def _alias_block(

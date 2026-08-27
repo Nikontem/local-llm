@@ -107,7 +107,11 @@ def test_a_shell_file_that_is_not_utf8_is_reported_and_never_rewritten(harness):
     assert rc.read_bytes() == original, "the file was rewritten"
     assert "not UTF-8" in result.output and str(rc) in result.output
     assert not (h.tmp / ".zshrc.local-llm.bak").exists(), "nothing was rewritten to back up"
-    assert "/fake/_zsh" in result.output, "the completion file was still written"
+    # The completion installer appends its own lines to this same file and has no
+    # guards of its own, so a file we refuse to touch is refused to it as well. On
+    # this one it does not merely rewrite the file: it raises while reading it.
+    assert "/fake/_zsh" not in result.output
+    assert "completion was not installed" in result.output
 
 
 def test_the_rc_file_is_copied_aside_before_it_is_rewritten(harness):

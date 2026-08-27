@@ -214,33 +214,87 @@ def test_yes_before_the_subcommand_name_still_counts(harness):
     assert seen == [True, True, False]
 
 
-def test_completion_is_installed_after_the_rc_file_is_judged(tmp_path, monkeypatch):
-    """typer's installer appends its own lines to the same rc file, so doing it first
-    made the refusal say a file was left exactly as it is moments after it grew."""
+def test_a_file_we_refuse_to_touch_is_not_touched_by_the_completion_installer(
+    tmp_path, monkeypatch
+):
+    """typer's installer appends to the same rc file with no guard of any kind, so
+    letting it run rewrote the very file the line above said was left exactly as it is."""
     from local_llm import cli
 
     rc = tmp_path / ".zshrc"
-    rc.write_text(f"export A=1\n{MARK_BEGIN}\nalias half='x'\n")
+    rc.write_text(f"export PATH=/usr/local/bin\n{MARK_BEGIN}\nalias half=x\n")
+    before = rc.read_bytes()
+    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: tmp_path))
+
+    lines = cli._integrate_shell("zsh", aliases=True, yes=True)
+
+    assert rc.read_bytes() == before, "the refused file was rewritten anyway"
+    assert any("left exactly as it is" in line for line in lines)
+    assert any("completion" in line and "not installed" in line for line in lines)
+    assert not (tmp_path / ".zfunc").exists()
+
+
+def test_a_shell_file_that_is_not_utf8_never_raises_at_the_person(tmp_path, monkeypatch):
+    """typer's installer reads the rc file in UTF-8 and raises; nothing caught it."""
+    from local_llm import cli
+
+    rc = tmp_path / ".zshrc"
+    rc.write_bytes("export CAFE=caf\xe9\n".encode("iso-8859-1"))
+    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: tmp_path))
+
+    lines = cli._integrate_shell("zsh", aliases=True, yes=True)
+
+    assert any("not UTF-8" in line for line in lines)
+    assert rc.read_bytes() == "export CAFE=caf\xe9\n".encode("iso-8859-1")
+
+
+def test_a_completion_installer_that_fails_is_reported_not_raised(tmp_path, monkeypatch):
+    from local_llm import cli
+
+    (tmp_path / ".zshrc").write_text("export A=1\n")
+    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: tmp_path))
+
+    def refuse(shell):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(cli, "install_completion", refuse)
+    lines = cli._integrate_shell("zsh", aliases=True, yes=True)
+
+    assert any("could not install" in line for line in lines), lines
+
+
+def test_our_block_goes_in_before_the_completion_installer_appends(tmp_path, monkeypatch):
+    """The installer appends its own lines to the same rc file. Running it first meant
+    our block was worked out from a copy of the file taken before those lines existed."""
+    from local_llm import cli
+
+    rc = tmp_path / ".zshrc"
+    rc.write_text("export A=1\n")
     monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: tmp_path))
 
     order: list[str] = []
 
     def fake_install(shell):
         order.append("completion")
-        rc.write_text(rc.read_text() + "fpath+=~/.zfunc\nautoload -Uz compinit; compinit\n")
+        rc.write_text(rc.read_text() + "fpath+=~/.zfunc; autoload -Uz compinit; compinit\n")
         return tmp_path / ".zfunc" / "_local-llm"
 
     monkeypatch.setattr(cli, "install_completion", fake_install)
-    monkeypatch.setattr(cli, "marker_warning", lambda path, problem: (
-        order.append("judged") or f"{path} {problem}, so it was left exactly as it is"
-    ))
+    original_write = cli.atomic_write
+
+    def watched(target, text, **kwargs):
+        order.append("block")
+        original_write(target, text, **kwargs)
+
+    monkeypatch.setattr(cli, "atomic_write", watched)
 
     lines = cli._integrate_shell("zsh", aliases=True, yes=True)
 
-    assert order == ["judged", "completion"], "the file was judged after it was changed"
-    assert any("left exactly as it is" in line for line in lines)
+    assert order == ["block", "completion"]
     assert any("completion written to" in line for line in lines)
-    assert "alias half='x'" in rc.read_text(), "the half block was repaired anyway"
+    after = rc.read_text()
+    assert MARK_BEGIN in after and "export A=1" in after
+    assert "fpath+=~/.zfunc" in after, "the installer's lines were overwritten"
 
 
 def test_an_alias_of_the_same_name_elsewhere_in_the_rc_file_is_reported(tmp_path, monkeypatch):

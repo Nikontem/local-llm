@@ -217,3 +217,31 @@ def test_an_alias_defined_outside_our_block_is_named_and_the_winner_said():
 
     twice = "alias llm='one'\n" + block_text(["alias llm='local-llm'"]) + "alias llm='two'\n"
     assert shadowed_aliases(twice, ["llm"]) == [("llm", "theirs")], "the last one decides"
+
+
+def test_an_alias_inside_a_function_body_is_not_a_shadow():
+    """It defines nothing until the function is called, so warning about it is wrong."""
+    from local_llm.shellrc import shadowed_aliases
+
+    inside = 'myfunc() {\n  alias llm="inside"\n}\n' + block_text(["alias llm='local-llm'"])
+    assert shadowed_aliases(inside, ["llm"]) == []
+
+    commented = "# alias llm='old'\n" + block_text(["alias llm='local-llm'"])
+    assert shadowed_aliases(commented, ["llm"]) == []
+
+    real = "alias llm='old'\n" + block_text(["alias llm='local-llm'"])
+    assert shadowed_aliases(real, ["llm"]) == [("llm", "ours")]
+
+
+def test_a_file_with_windows_line_endings_keeps_them():
+    """A dotfiles repository that normalises to CRLF should not come back mixed."""
+    from local_llm.shellrc import line_ending
+
+    text = "export FOO=bar\r\nalias other=x\r\n"
+    assert line_ending(text) == "\r\n" and line_ending("a\nb\n") == "\n"
+
+    updated = upsert_block(text, ["alias a=b"])
+
+    assert "\n" not in updated.replace("\r\n", ""), "a bare newline crept in"
+    assert block_lines(updated) == ["alias a=b"]
+    assert remove_block(updated).startswith("export FOO=bar\r\nalias other=x\r\n")
