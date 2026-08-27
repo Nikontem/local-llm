@@ -309,10 +309,19 @@ def step_settings(ctx: SetupContext, default_model: str) -> Path:
 # ---------------------------------------------------------------- 6. integrations
 
 
-def choose_harnesses(io: Io, installed, missing, status_of) -> list[Harness]:
-    """Print the grouped menu and return what was chosen. --yes takes everything."""
-    for line in harnesses.render(installed, missing, status_of):
+def show_harnesses(io: Io, settings: Settings, installed, missing, status_of) -> None:
+    """The grouped menu, plus the one warning it owes a person, printed and nothing more."""
+    for line in harnesses.render(
+        installed, missing, lambda h: harnesses.safe_status(h, status_of)
+    ):
         io.say(line)
+    for line in harnesses.note_lines(settings, installed):
+        io.say(line)
+
+
+def choose_harnesses(io: Io, settings: Settings, installed, missing, status_of) -> list[Harness]:
+    """Print the grouped menu and return what was chosen. --yes takes everything."""
+    show_harnesses(io, settings, installed, missing, status_of)
     rows = harnesses.numbered(installed)
     if not rows:
         return []
@@ -334,7 +343,7 @@ def step_integrations(ctx: SetupContext) -> None:
 
     shell = ctx.shell or detect_shell()
     installed, missing = harnesses.detect(ctx.which)
-    chosen = choose_harnesses(io, installed, missing, ctx.harness_status)
+    chosen = choose_harnesses(io, ctx.settings, installed, missing, ctx.harness_status)
     for harness in chosen:
         io.say(f"  {harness.title}")
         try:

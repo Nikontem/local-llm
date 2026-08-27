@@ -108,3 +108,45 @@ def test_integrate_warns_when_the_router_is_not_loopback(harness):
     cli._state = None
     result = h.run("integrate", input="n\n")
     assert "not a loopback address" in result.output
+
+
+def test_setup_wires_harness_prompts_through_the_wizard(harness):
+    """The context the wizard hands a harness must not reach typer or Rich directly."""
+    h = harness
+    fake_which(h.monkeypatch, "codex")
+    seen = {}
+    h.monkeypatch.setattr(
+        cli.codex_integration, "configure", lambda ctx: seen.setdefault("ctx", ctx) and []
+    )
+    h.run("integrate", "codex", "--yes")
+    assert seen["ctx"].yes is True
+
+
+def test_menu_survives_a_harness_whose_status_cannot_be_read(harness):
+    h = harness
+    fake_which(h.monkeypatch, "opencode")
+    plugin = h.tmp / ".config" / "opencode" / "plugins" / "local-llm-models.js"
+    plugin.parent.mkdir(parents=True)
+    plugin.symlink_to(h.tmp / "does-not-exist.js")
+    result = h.run("integrate")
+    assert result.exit_code == 0, result.output
+    assert "opencode" in result.output
+
+
+def test_menu_reasks_after_an_answer_it_cannot_parse(harness):
+    h = harness
+    fake_which(h.monkeypatch, "codex")
+    interactive(h.monkeypatch)
+    result = h.run("integrate", input="oops\nn\n")
+    assert result.exit_code == 0, result.output
+    assert "Pick numbers between 1 and 1" in result.output
+    assert not (h.tmp / ".codex").exists()
+
+
+def test_menu_with_yes_configures_every_agent_found(harness):
+    h = harness
+    fake_which(h.monkeypatch, "codex", "claude")
+    result = h.run("integrate", "--yes")
+    assert result.exit_code == 0, result.output
+    assert "[model_providers.local-llm]" in (h.tmp / ".codex" / "config.toml").read_text()
+    assert "local-llm claude" in result.output

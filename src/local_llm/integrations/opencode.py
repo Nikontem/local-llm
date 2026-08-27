@@ -49,7 +49,11 @@ def plugin_source() -> str:
 def plugin_status(paths: OpencodePaths) -> str:
     if not paths.plugin.is_file():
         return "missing"
-    return "same" if paths.plugin.read_text() == plugin_source() else "different"
+    try:
+        current = paths.plugin.read_text()
+    except OSError:
+        return "unreadable"
+    return "same" if current == plugin_source() else "different"
 
 
 def install_plugin(paths: OpencodePaths) -> Path:
@@ -108,6 +112,8 @@ def configure(ctx: HarnessContext, *, agent: bool = True) -> list[str]:
     state = plugin_status(paths)
     if state == "same":
         lines.append(f"plugin already installed: {paths.plugin}")
+    elif state == "unreadable":
+        lines.append(f"{paths.plugin} cannot be read, so it is left as it is.")
     else:
         replace = True
         if state == "different":

@@ -10,6 +10,7 @@ from functools import partial
 from .integrations import HarnessContext
 from .integrations import codex as codex_integration
 from .integrations import opencode as opencode_integration
+from .settings import Settings
 
 PROVIDER = "provider"
 LAUNCHER = "launcher"
@@ -141,12 +142,35 @@ def numbered(installed: Sequence[Harness]) -> list[Harness]:
     return [h for h in installed if h.kind in (PROVIDER, LAUNCHER)]
 
 
+def note_lines(settings: Settings, installed: Sequence[Harness]) -> list[str]:
+    """The one warning the menu owes a person before it writes another tool's config."""
+    if settings.is_local or not numbered(installed):
+        return []
+    return [
+        "",
+        f"  Note: {settings.host} is not a loopback address, so configuring an agent"
+        " writes that address into its config file, where anything reading that file"
+        " can see it.",
+    ]
+
+
+def safe_status(harness: Harness, status_of: Callable[[Harness], str]) -> str:
+    """A harness that cannot say how it is configured still gets a row."""
+    if harness.status is None:
+        return ""
+    try:
+        return status_of(harness)
+    except Exception:  # a menu must render whatever the disk is doing
+        return "unknown"
+
+
 def _status_note(harness: Harness, state: str) -> str:
     if harness.kind == PROVIDER:
         return {
             "same": "configured",
             "different": "configured, but differs from ours",
             "unreadable": "its config file does not parse",
+            "unknown": "cannot tell — its config file could not be read",
         }.get(state, "not configured")
     if harness.kind == LAUNCHER:
         alias = harness.alias[0] if harness.alias else ""

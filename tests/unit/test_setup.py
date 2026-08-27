@@ -275,3 +275,32 @@ def test_step_six_says_when_nothing_is_installed(tmp_path):
     ctx.harness_status = lambda h: "missing"
     step_integrations(ctx)
     assert "No coding agents found on PATH" in script.text()
+
+
+def test_step_six_warns_when_the_router_is_not_loopback(tmp_path):
+    from local_llm.setup import step_integrations
+
+    script = Script(confirms=[True], asks=["n"])
+    ctx = make_ctx(tmp_path, script, tools={"codex": "/usr/local/bin/codex"})
+    ctx.settings.host = "0.0.0.0"
+    ctx.configure_harness = lambda h: []
+    ctx.harness_status = lambda h: "missing"
+    step_integrations(ctx)
+    assert "not a loopback address" in script.text()
+
+
+def test_step_six_asks_harness_questions_through_io(tmp_path):
+    from local_llm.setup import step_integrations
+
+    script = Script(confirms=[True], asks=["1"])
+    ctx = make_ctx(tmp_path, script, tools={"codex": "/usr/local/bin/codex"})
+    asked: list[str] = []
+
+    def configure(harness):
+        asked.append(harness.key)
+        return ["did it"]
+
+    ctx.configure_harness = configure
+    ctx.harness_status = lambda h: "missing"
+    step_integrations(ctx)
+    assert asked == ["codex"] and "did it" in script.text()

@@ -50,7 +50,7 @@ from .router import Router, RouterError
 from .sampling import values_for
 from .sections import build_section, local_name, section_name
 from .settings import load_settings
-from .setup import Io, SetupContext, run_setup
+from .setup import Io, SetupContext, choose_harnesses, run_setup, show_harnesses
 from .shellrc import (
     TOOL_ALIAS,
     alias_lines,
@@ -1135,16 +1135,21 @@ def remove(
 # ---------------------------------------------------------------- integrations
 
 
-def _harness_context(st: State, *, yes: bool) -> HarnessContext:
+def _harness_context(st: State, *, yes: bool, io: Io | None = None) -> HarnessContext:
+    """Inside the wizard every question goes through its Io; elsewhere, through typer."""
     return HarnessContext(
         paths=st.paths,
         settings=st.settings,
         preset=_preset_or_none(st),
         home=Path.home(),
         env=os.environ,
-        say=out.print,
-        confirm=lambda prompt, default: typer.confirm(prompt, default=default),
-        yes=yes,
+        say=out.print if io is None else io.say,
+        confirm=(
+            (lambda prompt, default: typer.confirm(prompt, default=default))
+            if io is None
+            else io.confirm
+        ),
+        yes=yes if io is None else (io.yes or yes),
     )
 
 
@@ -1233,28 +1238,22 @@ def integrate_menu(ctx: typer.Context, yes: bool = typer.Option(
     def status_of(harness: harnesses.Harness) -> str:
         return harness.status(context) if harness.status else "missing"
 
-    for line in harnesses.render(installed, missing, status_of):
-        out.print(line)
-    if not st.settings.is_local and harnesses.numbered(installed):
-        out.print("")
-        out.print(
-            f"  Note: {st.settings.host} is not a loopback address, so configuring an"
-            " agent writes that address into its config file, where anything reading"
-            " that file can see it."
-        )
+    io = Io(
+        say=out.print,
+        ask=lambda prompt, default: typer.prompt(prompt, default=default),
+        confirm=lambda prompt, default: typer.confirm(prompt, default=default),
+        run=lambda cmd: 0,
+        yes=yes or not _interactive(),
+    )
     rows = harnesses.numbered(installed)
     chosen: list[harnesses.Harness] = []
     if rows and yes:
+        show_harnesses(io, st.settings, installed, missing, status_of)
         chosen = rows
     elif rows and _interactive():
-        out.print("")
-        answer = typer.prompt(
-            "  Numbers to configure (e.g. 1 3), a for all, n for none", default="a"
-        )
-        try:
-            chosen = harnesses.parse_choice(answer, rows)
-        except ValueError as error:
-            fail(str(error))
+        chosen = choose_harnesses(io, st.settings, installed, missing, status_of)
+    else:
+        show_harnesses(io, st.settings, installed, missing, status_of)
     for harness in chosen:
         out.print(f"  {harness.title}")
         try:
@@ -1388,10 +1387,10 @@ def setup(
             st, shell, aliases=True, yes=True, extra_aliases=extra
         ),
         harness_status=lambda harness: (
-            harness.status(_harness_context(st, yes=yes)) if harness.status else "missing"
+            harness.status(_harness_context(st, yes=yes, io=io)) if harness.status else "missing"
         ),
         configure_harness=lambda harness: (
-            harness.configure(_harness_context(st, yes=yes))
+            harness.configure(_harness_context(st, yes=yes, io=io))
             if harness.configure
             else _launcher_lines(harness)
         ),

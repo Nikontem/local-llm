@@ -73,3 +73,24 @@ def test_the_informational_notes_stay_honest():
     assert "google-antigravity" in antigravity
     for note in (gemini, antigravity):
         assert "proxy" not in note.lower(), "never point anyone at a proxy patch"
+
+
+def test_note_lines_warn_only_when_the_host_is_not_loopback():
+    from local_llm.settings import Settings
+
+    installed, _ = harnesses.detect(which_only("codex"))
+    assert harnesses.note_lines(Settings(), installed) == []
+    remote = harnesses.note_lines(Settings(host="0.0.0.0", allow_remote=True), installed)
+    assert len(remote) == 2 and "not a loopback address" in remote[1]
+    none_installed, _ = harnesses.detect(which_only())
+    assert harnesses.note_lines(Settings(host="0.0.0.0"), none_installed) == []
+
+
+def test_safe_status_never_raises():
+    def explode(harness):
+        raise OSError("permission denied")
+
+    harness = harnesses.find("opencode")
+    assert harnesses.safe_status(harness, explode) == "unknown"
+    assert harnesses.safe_status(harness, lambda h: "same") == "same"
+    assert harnesses.safe_status(harnesses.find("gemini"), explode) == ""
