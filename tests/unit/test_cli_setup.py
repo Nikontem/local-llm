@@ -93,6 +93,23 @@ def test_a_half_marked_rc_file_is_left_exactly_as_it_is(harness):
     assert "by hand" in removing.output
 
 
+def test_a_shell_file_that_is_not_utf8_is_reported_and_never_rewritten(harness):
+    """Read in the locale's encoding and written back in UTF-8, it would be transcoded."""
+    h = harness
+    h.monkeypatch.setattr(cli, "install_completion", lambda shell: Path("/fake/_zsh"))
+    rc = h.tmp / ".zshrc"
+    original = "export CAFE=caf\xe9\n".encode("iso-8859-1")
+    rc.write_bytes(original)
+
+    result = h.run("completion", "install", "--shell", "zsh", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert rc.read_bytes() == original, "the file was rewritten"
+    assert "not UTF-8" in result.output and str(rc) in result.output
+    assert not (h.tmp / ".zshrc.local-llm.bak").exists(), "nothing was rewritten to back up"
+    assert "/fake/_zsh" in result.output, "the completion file was still written"
+
+
 def test_the_rc_file_is_copied_aside_before_it_is_rewritten(harness):
     h = harness
     h.monkeypatch.setattr(cli, "install_completion", lambda shell: Path("/fake/_zsh"))

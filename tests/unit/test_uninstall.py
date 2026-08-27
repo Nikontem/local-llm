@@ -261,6 +261,38 @@ def test_remove_config_also_removes_a_backup_created_after_inventory(tmp_path):
     assert not (paths.config_dir / "models.ini.bak").exists() and not paths.config_dir.exists()
 
 
+def test_a_shell_file_that_is_not_utf8_never_stops_the_uninstall(tmp_path):
+    """It used to raise out of inventory(), before the plan was even printed."""
+    paths = populate(tmp_path)
+    zshrc = tmp_path / ".zshrc"
+    original = zshrc.read_bytes() + "export CAFE=caf\xe9\n".encode("iso-8859-1")
+    zshrc.write_bytes(original)
+
+    inv = inventory(paths, home=tmp_path, env={})
+
+    assert inv.rc_not_utf8 == [zshrc]
+    assert zshrc not in inv.rc_with_block and zshrc not in inv.rc_with_retired
+
+    lines = remove_integrations(inv, ctx_for(tmp_path), restore_retired=True)
+
+    assert zshrc.read_bytes() == original, "the file was touched"
+    assert not (tmp_path / ".zshrc.local-llm.bak").exists(), "nothing was rewritten to back up"
+    assert any("not UTF-8" in line and str(zshrc) in line for line in lines)
+    assert not (tmp_path / ".zfunc" / "_local-llm").exists(), "the rest of the removal still ran"
+    assert (tmp_path / ".bashrc").read_text() == "export B=2\n"
+
+
+def test_a_utf8_shell_file_keeps_its_bytes_through_an_uninstall(tmp_path):
+    """On a machine whose locale is not UTF-8, reading and writing used to disagree."""
+    paths = populate(tmp_path)
+    zshrc = tmp_path / ".zshrc"
+    zshrc.write_bytes("export CAFE=caf\u00e9\n".encode() + zshrc.read_bytes())
+
+    remove_integrations(inventory(paths, home=tmp_path, env={}), ctx_for(tmp_path))
+
+    assert zshrc.read_bytes().startswith("export CAFE=caf\u00e9\n".encode())
+
+
 def test_retired_line_alone_counts_as_nothing_left(tmp_path):
     paths = Paths.from_env(env={}, home=tmp_path)
     (tmp_path / ".zshrc").write_text(f"{RETIRED_PREFIX}source x\n")

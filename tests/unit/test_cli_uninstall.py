@@ -39,6 +39,25 @@ def test_all_yes_removes_everything_and_prints_the_hint(harness):
     assert "Nothing of local-llm's is left on this machine." in again.output
 
 
+def test_a_shell_file_that_is_not_utf8_is_named_and_the_rest_still_goes(harness):
+    """It used to raise out of inventory(), before the plan was even printed."""
+    h = harness
+    paths = populate(h.tmp)
+    rc = h.tmp / ".zshrc"
+    original = rc.read_bytes() + "export CAFE=caf\xe9\n".encode("iso-8859-1")
+    rc.write_bytes(original)
+
+    plan = h.run("uninstall", "--dry-run")
+    assert plan.exit_code == 0, plan.output
+    assert "not UTF-8" in plan.output and str(rc) in plan.output
+
+    result = h.run("uninstall", "--all", "--yes")
+    assert result.exit_code == 0, result.output
+    assert "not UTF-8" in result.output
+    assert rc.read_bytes() == original, "the file was touched"
+    assert not paths.preset.exists(), "everything else was still removed"
+
+
 def test_models_only_stops_a_running_router_first(harness):
     h = harness
     paths = populate(h.tmp)

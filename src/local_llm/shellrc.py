@@ -98,6 +98,18 @@ def marker_warning(path: Path, problem: str) -> str:
     )
 
 
+def encoding_warning(path: Path) -> str:
+    """The one line both integration and uninstall print about a file that is not UTF-8.
+
+    Reading it in whatever encoding the locale happens to name and writing it back in
+    UTF-8 transcodes somebody's file behind their back, so it is not read at all.
+    """
+    return (
+        f"{path} is not UTF-8, so it was left exactly as it is:"
+        " save it as UTF-8, then run this again"
+    )
+
+
 def _block_span(text: str) -> tuple[int, int] | None:
     """Where our first whole block sits, or None: no block, or markers that do not pair up."""
     if marker_problem(text) is not None:

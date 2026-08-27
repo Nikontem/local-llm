@@ -25,6 +25,7 @@ from .paths import Paths
 from .preset import Preset, PresetError
 from .shellrc import (
     RETIRED_PREFIX,
+    encoding_warning,
     marker_problem,
     marker_warning,
     mentions_block,
@@ -59,6 +60,7 @@ class Inventory:
     rc_with_block: list[Path] = field(default_factory=list)
     rc_with_retired: list[Path] = field(default_factory=list)
     rc_with_bash_source: list[Path] = field(default_factory=list)
+    rc_not_utf8: list[Path] = field(default_factory=list)
     codex_config: Path | None = None
     codex_backup: Path | None = None
     state_dir: Path | None = None
@@ -172,7 +174,15 @@ def inventory(
             inv.completion_files.append(completion)
         rc = rc_file(shell, home)
         if rc.is_file():
-            content = rc.read_text()
+            try:
+                content = rc.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # Nothing here can be read, so nothing here can be edited. Reported
+                # rather than skipped in silence, and never put in a list something
+                # rewrites: this used to raise before the plan was even printed.
+                if rc not in inv.rc_not_utf8:
+                    inv.rc_not_utf8.append(rc)
+                continue
             lines = content.splitlines()
             # Half a block counts here: it cannot be removed, but the person has to be
             # told it is there rather than have the file passed over in silence.
@@ -298,8 +308,14 @@ def remove_integrations(
     rc_files = {*inv.rc_with_block, *inv.rc_with_bash_source}
     if restore_retired:
         rc_files.update(inv.rc_with_retired)
+    for rc in inv.rc_not_utf8:
+        lines.append(encoding_warning(rc))
     for rc in sorted(rc_files):
-        text = rc.read_text()
+        try:
+            text = rc.read_text(encoding="utf-8")
+        except UnicodeDecodeError:  # re-saved between the plan and now
+            lines.append(encoding_warning(rc))
+            continue
         problem = marker_problem(text)
         if problem is not None:
             # Markers that do not pair up: the end marker our removal would delete up to

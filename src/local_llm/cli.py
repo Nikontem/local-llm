@@ -56,6 +56,7 @@ from .shellrc import (
     alias_lines,
     block_lines,
     detect_shell,
+    encoding_warning,
     install_completion,
     marker_problem,
     marker_warning,
@@ -1171,7 +1172,11 @@ def _integrate_shell(
     completion_path = install_completion(shell)
     lines.append(f"{shell} completion written to {completion_path}")
     rc = rc_file(shell, Path.home())
-    text = rc.read_text() if rc.is_file() else ""
+    try:
+        text = rc.read_text(encoding="utf-8") if rc.is_file() else ""
+    except UnicodeDecodeError:
+        lines.append(encoding_warning(rc))
+        return lines
     problem = marker_problem(text)
     if problem is not None:
         # Half a marked block means an edit of somebody's went wrong. Adding a second
@@ -1445,6 +1450,8 @@ def _print_plan(inv, chosen: set[str], sections: list[str]) -> None:
                     out.print(f"    {path}")
             for rc in inv.rc_with_retired:
                 out.print(f"    {rc}: a retired zsh line (put back only with --restore-shell-line)")
+            for rc in inv.rc_not_utf8:
+                out.print(f"    {rc}: not UTF-8, so it is left alone")
         elif key == "state":
             for path in [inv.state_dir, inv.settings_file]:
                 if path:
