@@ -1368,7 +1368,7 @@ def setup(
         hub=hub,
         detect=lambda reserve: _machine(st),
         router=st.router,
-        which=shutil.which,
+        which=_which,
         recommend=lambda machine, preset, use_: gather(
             hub, machine, preset, limit_per_group=3,
             on_progress=(

@@ -150,3 +150,11 @@ def test_menu_with_yes_configures_every_agent_found(harness):
     assert result.exit_code == 0, result.output
     assert "[model_providers.local-llm]" in (h.tmp / ".codex" / "config.toml").read_text()
     assert "local-llm claude" in result.output
+
+
+def test_the_fixture_isolates_other_tools_config_directories(harness, monkeypatch):
+    """A developer with these exported must not have their real config rewritten."""
+    import os
+
+    assert "CODEX_HOME" not in os.environ
+    assert "OPENCODE_CONFIG_DIR" not in os.environ

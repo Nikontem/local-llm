@@ -14,6 +14,9 @@ ENV_VARS = (
     "LOCAL_LLM_PORT", "LOCAL_LLM_HOST", "LOCAL_LLM_MAX_MODELS", "LOCAL_LLM_RESERVE_GB",
     "LOCAL_LLM_UI", "LOCAL_LLM_DEFAULT_MODEL", "LOCAL_LLM_ALLOW_REMOTE", "LOCAL_LLM_API_KEY",
     "XDG_CONFIG_HOME", "XDG_STATE_HOME", "EDITOR", "VISUAL",
+    # Another tool's own relocation variables: left set, a test run rewrites the
+    # developer's real Codex config and their real opencode plugin.
+    "CODEX_HOME", "OPENCODE_CONFIG_DIR",
 )
 
 

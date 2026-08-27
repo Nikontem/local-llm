@@ -88,3 +88,32 @@ def test_setup_yes_runs_the_wizard(hubbed):
     assert "Hi there friend" in result.output
     assert (h.tmp / ".config" / "local-llm" / "settings.toml").is_file()
     assert "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q8_0" in h.paths.preset.read_text()
+
+
+def test_setup_detects_agents_through_the_injectable_hook(hubbed):
+    """Step 6 must not read the real executable search path, or the wizard would
+    configure whatever the developer running the tests happens to have installed."""
+    h = hubbed
+    h.monkeypatch.setattr(cli, "_which", lambda binary: None)
+    h.monkeypatch.setattr(cli, "install_completion", lambda shell: Path(f"/fake/_{shell}"))
+    import local_llm.setup as setup_module
+
+    h.monkeypatch.setattr(
+        setup_module,
+        "run_checks",
+        lambda *a, **k: [
+            cli.Check("brew", "ok", "/opt/homebrew/bin/brew"),
+            cli.Check("llama-server", "ok", "/opt/homebrew/bin/llama-server"),
+            cli.Check("hf", "ok", "/opt/homebrew/bin/hf"),
+            cli.Check("hf token", "ok", "logged in as nikos"),
+            cli.Check("router support", "ok", "yes"),
+        ],
+    )
+    h.backend.spawn_listening = {5678}
+    h.http.responses[("POST", "/v1/chat/completions")] = {
+        "choices": [{"message": {"content": "Hi"}}]
+    }
+    result = h.run("setup", "--yes")
+    assert result.exit_code == 0, result.output
+    assert "No coding agents found on PATH." in result.output
+    assert not (h.tmp / ".codex").exists()
