@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import difflib
 import os
-import shutil
-import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,13 +13,12 @@ from tomlkit.exceptions import ParseError
 
 from ..preset import smallest_model
 from ..settings import Settings
-from . import HarnessContext
+from . import HarnessContext, atomic_write, backup_path
 
 PROVIDER_ID = "local-llm"
 WIRE_API = "responses"  # Codex dropped the older "chat" wire format in February 2026
 KEY_VARIABLE = "LOCAL_LLM_API_KEY"
 PARENTS = ("model_providers", "profiles")
-BACKUP_SUFFIX = ".local-llm.bak"
 EXPERIMENTAL = (
     "experimental: needs a recent llama.cpp build; tool calls may fail on older ones"
 )
@@ -36,7 +33,7 @@ class CodexPaths:
     def backup(self) -> Path:
         """Our own name, not the plain .bak somebody may have made by hand: uninstall
         deletes this file, and it must never be able to delete a person's own copy."""
-        return self.config_file.with_name(self.config_file.name + BACKUP_SUFFIX)
+        return backup_path(self.config_file)
 
 
 def codex_paths(
@@ -197,29 +194,6 @@ def current_render(paths: CodexPaths) -> str:
     return render(provider, _ours(doc, "profiles"))
 
 
-def _atomic_write(paths: CodexPaths, text: str) -> None:
-    paths.config_dir.mkdir(parents=True, exist_ok=True)
-    # People commonly symlink ~/.codex/config.toml into a dotfiles repository. Writing
-    # to the link path would replace the link with a regular file and leave the dotfiles
-    # copy holding the old content, so the write goes through to what the link points at.
-    # The temporary file has to sit beside that destination for os.replace to work
-    # across a filesystem boundary, and the backup stays where the link is.
-    target = paths.config_file.resolve() if paths.config_file.is_symlink() else paths.config_file
-    if paths.config_file.is_file():
-        if paths.backup.is_symlink():
-            paths.backup.unlink()  # never write through a link somebody put there
-        shutil.copy2(paths.config_file, paths.backup)
-    handle, temporary = tempfile.mkstemp(dir=target.parent, prefix=".config.toml.")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            stream.write(text)
-        os.replace(temporary, target)
-    finally:
-        # A failed write must not litter ~/.codex with hidden half-files.
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-
-
 def write(paths: CodexPaths, provider: dict, profile: dict | None) -> None:
     doc = _document(paths)
     if doc is None:
@@ -227,7 +201,7 @@ def write(paths: CodexPaths, provider: dict, profile: dict | None) -> None:
     _set(doc, "model_providers", provider)
     if profile is not None:
         _set(doc, "profiles", profile)
-    _atomic_write(paths, tomlkit.dumps(doc))
+    atomic_write(paths.config_file, tomlkit.dumps(doc))
 
 
 def drop(paths: CodexPaths) -> list[str]:
@@ -249,7 +223,7 @@ def drop(paths: CodexPaths) -> list[str]:
         del doc["profile"]
         removed.append(f'profile = "{PROVIDER_ID}"')
     if removed:
-        _atomic_write(paths, tomlkit.dumps(doc))
+        atomic_write(paths.config_file, tomlkit.dumps(doc))
     return removed
 
 
