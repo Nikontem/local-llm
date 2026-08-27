@@ -5,6 +5,7 @@ from local_llm.integrations.opencode import (
     PLUGIN_NAME,
     agent_snippet,
     current_tiny_model,
+    foreign_tiny_model,
     install_plugin,
     is_strict_json,
     merge_agent,
@@ -146,6 +147,59 @@ def make_ctx(tmp_path, *, yes=True, answers=None, config=None):
     ctx.asked = asked  # type: ignore[attr-defined]
     ctx.config = config_dir / "opencode.json"  # type: ignore[attr-defined]
     return ctx
+
+
+def test_foreign_tiny_model_names_only_an_agent_we_did_not_write():
+    assert foreign_tiny_model(json.dumps(THEIRS)) == "anthropic/claude-haiku-4-5"
+    assert foreign_tiny_model('{"agent": {"tiny": {"model": "llamacpp/small"}}}') is None
+    assert foreign_tiny_model("{}") is None
+
+
+def test_a_tiny_agent_somebody_wrote_themselves_survives_yes_mode(tmp_path):
+    """Under --yes and in the setup wizard nothing is asked, so nothing is replaced."""
+    from local_llm.integrations import opencode
+
+    ctx = make_ctx(tmp_path, yes=True, config=json.dumps(THEIRS, indent=2) + "\n")
+
+    lines = opencode.configure(ctx)
+
+    assert json.loads(ctx.config.read_text()) == THEIRS
+    assert any("your own" in line and "anthropic/claude-haiku-4-5" in line for line in lines)
+    assert any("without --yes" in line for line in lines)
+    assert ctx.asked == [], "yes mode asks nothing"
+
+
+def test_replacing_a_tiny_agent_of_theirs_is_a_question_that_names_the_model(tmp_path):
+    from local_llm.integrations import opencode
+
+    refusing = make_ctx(tmp_path, yes=False, answers=[False], config=json.dumps(THEIRS) + "\n")
+    lines = opencode.configure(refusing)
+    prompt, default = refusing.asked[-1]
+    assert "anthropic/claude-haiku-4-5" in prompt and "llamacpp/small" in prompt
+    assert "Replace" in prompt and not prompt.startswith("Add")
+    assert default is False, "the default keeps what is already there"
+    assert json.loads(refusing.config.read_text()) == THEIRS
+    assert any("left on anthropic/claude-haiku-4-5" in line for line in lines)
+
+    accepting = make_ctx(
+        tmp_path / "other", yes=False, answers=[True], config=json.dumps(THEIRS) + "\n"
+    )
+    lines = opencode.configure(accepting)
+    data = json.loads(accepting.config.read_text())
+    assert data["agent"]["tiny"]["model"] == "llamacpp/small"
+    assert data["provider"] == THEIRS["provider"], "the rest of the file is untouched"
+    assert any("tiny agent set to llamacpp/small" in line for line in lines)
+
+
+def test_a_tiny_agent_of_ours_is_updated_without_a_question(tmp_path):
+    from local_llm.integrations import opencode
+
+    ours = {"agent": {"tiny": {"mode": "subagent", "model": "llamacpp/retired"}}}
+    ctx = make_ctx(tmp_path, yes=True, config=json.dumps(ours) + "\n")
+
+    opencode.configure(ctx)
+
+    assert json.loads(ctx.config.read_text())["agent"]["tiny"]["model"] == "llamacpp/small"
 
 
 def test_the_config_is_copied_aside_and_replaced_in_one_step(tmp_path):

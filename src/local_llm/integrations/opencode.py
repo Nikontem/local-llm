@@ -16,6 +16,9 @@ from . import HarnessContext, atomic_write
 
 PLUGIN_NAME = "local-llm-models.js"
 CONFIG_CANDIDATES = ("opencode.jsonc", "opencode.json", "config.json")
+#: Every model this tool configures is served by the router, which the plugin registers
+#: with opencode under this provider name. A model id without it names somebody else's.
+MODEL_PREFIX = "llamacpp/"
 _TINY_MODEL = re.compile(r'"tiny"\s*:\s*\{[^{}]*?"model"\s*:\s*"([^"]+)"', re.DOTALL)
 
 
@@ -88,6 +91,11 @@ def is_strict_json(text: str) -> bool:
 
 
 def merge_agent(text: str, agent: dict, name: str = "tiny") -> str | None:
+    """The config with this agent in it, or None when the file is not strict JSON.
+
+    An agent already under that name is replaced. Whether replacing it is allowed is
+    the caller's question to ask, not this one's: see foreign_tiny_model.
+    """
     if not is_strict_json(text):
         return None
     data = json.loads(text or "{}")
@@ -107,6 +115,16 @@ def agent_snippet(agent: dict, name: str = "tiny") -> str:
 def current_tiny_model(text: str) -> str | None:
     match = _TINY_MODEL.search(text)
     return match.group(1) if match else None
+
+
+def foreign_tiny_model(text: str) -> str | None:
+    """The tiny agent's model when somebody other than this tool configured it.
+
+    A tiny agent pointing at a model the router does not serve is the person's own -
+    a paid model, very possibly - and replacing it is a question, not a default.
+    """
+    model = current_tiny_model(text)
+    return None if model is None or model.startswith(MODEL_PREFIX) else model
 
 
 def configure(ctx: HarnessContext, *, agent: bool = True) -> list[str]:
@@ -150,19 +168,40 @@ def configure(ctx: HarnessContext, *, agent: bool = True) -> list[str]:
     if not model:
         lines.append("no model in models.ini yet, so the tiny helper agent was not added")
         return lines
-    model_id = f"llamacpp/{model}"
+    model_id = f"{MODEL_PREFIX}{model}"
     target = paths.config_file or paths.new_config
     text = target.read_text() if target.is_file() else ""
     if current_tiny_model(text) == model_id:
         lines.append(f"tiny agent already points at {model_id} in {target}")
+        return lines
+    theirs = foreign_tiny_model(text)
+    if theirs is not None and ctx.yes:
+        # Nothing can be asked here, and whether to give up a tiny agent somebody set up
+        # themselves is not a question this tool may answer on their behalf.
+        lines.append(
+            f"the tiny agent in {target} is your own, on {theirs}, so it was left alone:"
+            " run local-llm integrate opencode without --yes to replace it"
+        )
         return lines
     merged = merge_agent(text, tiny_agent(model_id))
     if merged is None:
         lines.append(f"{target} has comments, so it is not rewritten. Paste this into it:")
         lines.append(agent_snippet(tiny_agent(model_id)))
         return lines
-    if not ctx.ask(f"Add the tiny helper agent ({model_id}) to {target}?", True):
-        lines.append(f"tiny agent not added to {target}")
+    if theirs is not None:
+        allowed = ctx.confirm(
+            f"The tiny agent in {target} is your own, on {theirs}, not one local-llm"
+            f" wrote. Replace it with {model_id}?",
+            False,
+        )
+    else:
+        allowed = ctx.ask(f"Add the tiny helper agent ({model_id}) to {target}?", True)
+    if not allowed:
+        lines.append(
+            f"tiny agent left on {theirs} in {target}"
+            if theirs is not None
+            else f"tiny agent not added to {target}"
+        )
         return lines
     try:
         # The rest of this file is the person's own providers, keybindings and agents.
