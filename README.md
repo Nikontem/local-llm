@@ -105,10 +105,12 @@ section for each into `models.ini` (see [Models](#models) below).
 default model (the first one just downloaded, or the smallest already
 configured).
 
-**6. Shell and coding agents** — offers shell completion plus the
-`local_llm` / `claude_local` / `copilot_local` aliases, the opencode plugin
-if opencode is on PATH, and points out `local-llm claude` / `local-llm
-copilot` for the agents it finds.
+**6. Shell and coding agents** — detects which coding agents are installed and
+offers each the right kind of configuration: a provider written into Codex's
+or opencode's own config, or a launcher command plus a short alias for Claude
+Code, Copilot CLI, aider and Qwen Code. Agents that cannot use the router are
+named with the reason. Shell completion and the `local_llm` alias are offered
+alongside. See [Coding agents](#coding-agents).
 
 **7. Start** — starts the router and offers a one-line test chat against the
 smallest configured model, then prints the endpoints:
@@ -236,36 +238,91 @@ only when you know two configured models together fit the budget.
 
 ## Coding agents
 
-- **`local-llm claude [MODEL] [-- ARGS...]`** — sets `ANTHROPIC_BASE_URL`,
-  `ANTHROPIC_MODEL` and a dummy `ANTHROPIC_API_KEY`, then execs `claude`.
+`local-llm integrate` shows every coding agent it knows about that is
+installed on this machine, grouped by what configuring it actually means, and
+configures the ones you pick. The same menu is step 6 of `local-llm setup`.
 
-  ```
-  claude -> Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M (context 32768) at http://127.0.0.1:5678
-  ```
-- **`local-llm copilot [MODEL] [--online|--offline]`** — the same for GitHub
-  Copilot CLI's `COPILOT_PROVIDER_*` variables; `--offline` (the default)
-  keeps Copilot from also reaching the network.
+```
+  Configured inside the agent
+   1. OpenAI Codex CLI    ~/.codex/config.toml: provider and profile local-llm (experimental)
+   2. opencode            plugin listing every model, and a tiny helper agent   · configured
+
+  Launched through local-llm
+   3. Claude Code         local-llm claude   · alias claude_local
+
+  Detected, but cannot use the router
+      Antigravity CLI     speaks only Google's own API format, which the router does not serve
+
+  Not found: GitHub Copilot CLI, aider, Qwen Code, Gemini CLI
+
+  Numbers to configure (e.g. 1 3), a for all, n for none [a]:
+```
+
+**Configured inside the agent** means a provider is written into the agent's
+own configuration file, so it offers the router's models every time it starts,
+with no help from this tool.
+
+- **OpenAI Codex CLI** — writes `[model_providers.local-llm]` and
+  `[profiles.local-llm]` into `~/.codex/config.toml` (or `$CODEX_HOME`), then
+  run `codex --profile local-llm`, or the `codex_local` alias. The file is
+  parsed and rewritten, so your comments and every other provider survive; a
+  `.bak` is kept, and a file that does not parse is never touched.
+  **This one is experimental.** Codex speaks only the OpenAI Responses API,
+  and llama.cpp's `/v1/responses` endpoint does not yet match what Codex sends
+  — the compatibility work is an open, unmerged llama.cpp pull request. Plain
+  chat may work while tool calls fail, depending on how recent your
+  `llama-server` is. Note too that Codex reads a project-level
+  `.codex/config.toml` in preference to the one in your home directory, so if
+  one repository ignores the local provider, look there first.
+- **opencode** — copies `resources/opencode-plugin.js` to
+  `~/.config/opencode/plugins/local-llm-models.js`, which builds a provider
+  with one model per `models.ini` section at opencode's own start-up, and adds
+  a `tiny` sub-agent bound to your smallest model with tools disabled. A
+  config file with comments is never rewritten; the snippet is printed to
+  paste. `local-llm integrate opencode --no-agent` installs the plugin alone.
+
+**Launched through local-llm** means nothing is written into the agent's
+configuration. A command sets the environment variables it reads and starts
+it, and an alias is offered.
+
+- **`local-llm claude [MODEL] [-- ARGS...]`** — `ANTHROPIC_BASE_URL`,
+  `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, a dummy
+  `ANTHROPIC_API_KEY`, and `CLAUDE_CODE_AUTO_COMPACT_WINDOW` from the model's
+  context. Alias `claude_local`.
+- **`local-llm copilot [MODEL] [--online|--offline]`** — the
+  `COPILOT_PROVIDER_*` variables; `--offline` (the default) keeps Copilot from
+  also reaching the network. The two token-limit variables it sets are
+  best-effort: they are not in Copilot's published documentation.
+  Alias `copilot_local`.
+- **`local-llm aider [MODEL] [-- ARGS...]`** — `OPENAI_API_BASE` plus
+  `--model openai/<name>`, which is what routes aider through a custom
+  endpoint. Alias `aider_local`.
+- **`local-llm qwen [MODEL] [-- ARGS...]`** — `OPENAI_BASE_URL`,
+  `OPENAI_API_KEY` and `OPENAI_MODEL`, all three of which Qwen Code needs
+  before it will use an OpenAI-compatible endpoint at all. Alias `qwen_local`.
 - **`local-llm env [MODEL] [--shell zsh|bash|fish]`** — prints the `export`
-  lines for both APIs so any other OpenAI- or Anthropic-compatible tool can
-  be pointed at the router, including `LOCAL_LLM_OPENAI_BASE_URL` and
-  `LOCAL_LLM_ANTHROPIC_BASE_URL` for scripts of your own.
-- **`local-llm integrate opencode [--agent/--no-agent]`** — copies the
-  plugin `resources/opencode-plugin.js` to
-  `~/.config/opencode/plugins/local-llm-models.js`, which builds an opencode
-  provider with one model per `models.ini` section at opencode's own
-  startup (asking before overwriting a file that differs). With
-  `--agent` (asked interactively, default yes) it also adds a `tiny`
-  sub-agent — a cheap helper bound to your smallest configured model, tools
-  disabled — to opencode's config. If that config file is strict JSON, it is
-  merged and rewritten; if it has comments or trailing commas (`.jsonc`),
-  the tool never rewrites it — it prints the snippet to paste in by hand.
-- **`local-llm completion install [--shell S] [--aliases/--no-aliases]`** —
-  installs shell completion for the detected or given shell, and, with
-  aliases (asked interactively, default yes), adds `local_llm`,
-  `claude_local` and `copilot_local` as short forms of `local-llm`,
-  `local-llm claude` and `local-llm copilot` — for anyone whose muscle
-  memory is from an earlier shell-script version of this tool. Model names
-  complete from `models.ini` even when the router is down.
+  lines for both APIs, for any tool not listed here.
+
+**Google's agents cannot be pointed at the router.** Gemini CLI has no setting
+for an OpenAI-compatible endpoint — the feature request was closed and its
+pull request never merged — and its `GOOGLE_GEMINI_BASE_URL` variable expects
+a server speaking Google's own request format, which `llama-server` does not.
+Gemini CLI is still actively released and still works with a paid Gemini or
+Gemini Enterprise API key, or a Gemini Code Assist Standard or Enterprise
+licence; access ended on 18 June 2026 for the free tier and for the paid
+consumer plans (AI Pro and Ultra). Its successor for consumer accounts,
+**Antigravity CLI** (`agy`), is in the same position. If you want a
+Gemini-CLI-shaped tool that runs local models, Qwen Code continues the same
+codebase and `local-llm qwen` configures it; if you want Antigravity itself to
+drive a local model, its Python SDK supports that officially
+(`pip install google-antigravity`, then `LocalOpenAIAgentConfig(base_url=...,
+model=...)`).
+
+**`local-llm completion install [--shell S] [--aliases/--no-aliases]`**
+installs shell completion and the `local_llm` alias. Aliases are add-only: one
+already in the block is never removed by a later run, only by
+`local-llm uninstall`. Model names complete from `models.ini` even when the
+router is down.
 
 `MODEL` defaults to `default_model` from settings; naming one that is not in
 `models.ini` is refused with the list of what is available.
@@ -355,7 +412,7 @@ a time, and lists every path before deleting it:
 ```
 $ local-llm uninstall
   1. models        5 model(s), 73.0 GB on disk
-  2. integrations  opencode plugin, opencode tiny agent, shell aliases, completion, a retired zsh line
+  2. integrations  opencode plugin, opencode tiny agent, shell aliases, completion, Codex provider and profile
   3. state         state and logs, settings.toml
   4. config        models.ini, models.ini.bak
   5. everything
@@ -382,6 +439,7 @@ for the standard install).
 | State directory | `~/.local/state/local-llm/` | `LOCAL_LLM_STATE_DIR` |
 | Logs | `STATE/logs/` | `LOCAL_LLM_LOG_DIR` |
 | Downloaded model files | the standard Hugging Face cache | `HF_HOME`, `HF_HUB_CACHE` |
+| Codex provider (when configured) | `~/.codex/config.toml` | `CODEX_HOME` |
 
 `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` are honoured for the first two rows
 when set.

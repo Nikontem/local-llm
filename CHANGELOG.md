@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Coding agents are detected and configured from one list: `local-llm
+  integrate` (and step 6 of `setup`) group what is installed by whether it
+  gets a provider written into its own config — Codex CLI, opencode — or a
+  launcher — Claude Code, Copilot CLI, aider, Qwen Code — and say why Gemini
+  CLI and Antigravity CLI cannot use the router. `integrate codex`, `aider`
+  and `qwen` are new commands; `doctor` and `uninstall` read the same list.
 - `uninstall`: undo models, integrations, state and config item by item,
   listing everything first; `--dry-run`, `--all`, `--restore-shell-line`.
 - `install.sh` is uv-only; Homebrew is used for llama.cpp and `hf` when present.
