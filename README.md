@@ -347,6 +347,31 @@ Every key also has an environment variable, which wins over the file:
   started without going through `local-llm claude` / `local-llm copilot` /
   `local-llm env`, so it never got the `*_BASE_URL` variables.
 
+## Uninstall
+
+`local-llm uninstall` undoes what the tool put on the machine, one category at
+a time, and lists every path before deleting it:
+
+```
+$ local-llm uninstall
+  1. models        5 model(s), 73.0 GB on disk
+  2. integrations  opencode plugin, opencode tiny agent, shell aliases, completion, a retired zsh line
+  3. state         state and logs, settings.toml
+  4. config        models.ini, models.ini.bak
+  5. everything
+Numbers to remove (e.g. 1 3), q to quit [q]:
+```
+
+Choosing models lets you pick which ones; their sections leave `models.ini`
+and their files (cache symlink and blob) are deleted. `--models`,
+`--integrations`, `--state`, `--config` and `--all` select without the menu,
+`--yes` skips the questions, `--dry-run` only prints the plan.
+`--restore-shell-line` puts back a `source …/local_llm.zsh` line that
+`completion install` had commented out. The config directory is removed only
+if nothing else is left in it. The tool cannot delete itself while running,
+so the last line prints the command for that (`uv tool uninstall local-llm`
+for the standard install).
+
 ## Files
 
 | What | macOS and Linux | Env override |

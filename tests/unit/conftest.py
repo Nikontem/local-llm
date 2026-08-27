@@ -48,8 +48,8 @@ def harness(tmp_path, monkeypatch):
     cli._state = None
     runner = CliRunner()
 
-    def run(*args):
-        return runner.invoke(cli.app, list(args))
+    def run(*args, input=None):
+        return runner.invoke(cli.app, list(args), input=input)
 
     return SimpleNamespace(paths=paths, backend=backend, http=http, run=run, tmp=tmp_path,
                            messages=messages, opened=opened, monkeypatch=monkeypatch)

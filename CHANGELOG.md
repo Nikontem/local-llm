@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `uninstall`: undo models, integrations, state and config item by item,
+  listing everything first; `--dry-run`, `--all`, `--restore-shell-line`.
+- `install.sh` is uv-only; Homebrew is used for llama.cpp and `hf` when present.
+- Downloads use plain HTTP and give up with a resume hint after three minutes
+  without progress.
+
 ## 0.1.0 — 2026-08-26
 
 First release.

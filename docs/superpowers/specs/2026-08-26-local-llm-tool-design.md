@@ -247,6 +247,20 @@ working. Model names complete from `models.ini` even when the router is down.
 
 ### 4.10 `local-llm --version`, `local-llm --help`
 
+### 4.11 `local-llm uninstall [--models] [--integrations] [--state] [--config] [--all] [--restore-shell-line] [--yes] [--dry-run]`
+
+Inventories what the tool has put on the machine and removes the chosen
+categories, listing every path first: models (sections and their files,
+including a cache entry's blob), integrations (opencode plugin and `tiny`
+agent — only from a strict-JSON config —, the shell aliases block, the
+completion file and bash's source line; optionally restoring a retired
+`source local_llm.zsh` line), state (the state directory and
+`settings.toml`), config (`models.ini` and its backup; the config directory
+only when empty afterwards). Without flags it shows a numbered menu; with
+`--yes` and no selection it refuses. The router is stopped first when models,
+state or config are removed. It ends by printing the command that removes
+the tool itself, chosen from where the interpreter lives.
+
 ## 5. Setup flow
 
 Each step prints what it found before asking anything. With `--yes`, every

@@ -56,6 +56,16 @@ from .shellrc import (
     retire_old_source,
     upsert_block,
 )
+from .uninstall import (
+    KEYS,
+    delete_model_file,
+    inventory,
+    remove_config,
+    remove_integrations,
+    remove_models,
+    remove_state,
+    tool_uninstall_hint,
+)
 
 app = typer.Typer(
     help="One llama.cpp router serving every model in models.ini.",
@@ -1040,14 +1050,6 @@ def add(
     _after_preset_change(st, plan.name)
 
 
-def _delete_model_file(path: Path) -> None:
-    """Delete a model file; a Hugging Face cache entry is a symlink, so delete its blob too."""
-    target = path.resolve() if path.is_symlink() else None
-    path.unlink(missing_ok=True)
-    if target is not None and target.exists():
-        target.unlink()
-
-
 @app.command()
 def remove(
     model: str = typer.Argument(..., autocompletion=complete_model),
@@ -1075,7 +1077,7 @@ def remove(
     if delete_files:
         for file in files:
             try:
-                _delete_model_file(file)
+                delete_model_file(file)
             except OSError as error:
                 err.print(f"  could not delete {file}: {error}")
     out.print("Removed.")
@@ -1252,3 +1254,134 @@ def setup(
         integrate_opencode=lambda: _integrate_opencode(st, agent=True, yes=True),
     )
     raise typer.Exit(run_setup(ctx, use=use, models=list(model)))
+
+
+# ---------------------------------------------------------------- uninstall
+
+
+def _print_plan(inv, chosen: set[str]) -> None:
+    for key in KEYS:
+        if key not in chosen:
+            continue
+        out.print(f"{key}: {inv.summary(key)}")
+        if key == "models":
+            for entry in inv.models:
+                out.print(f"  [{entry.section}]  {human_gb(entry.size)}")
+                for file in entry.files:
+                    out.print(f"    {file}")
+        elif key == "integrations":
+            candidates = [inv.plugin, inv.agent_config, *inv.completion_files]
+            candidates += [*inv.rc_with_block, *inv.rc_with_bash_source]
+            for path in candidates:
+                if path:
+                    out.print(f"    {path}")
+        elif key == "state":
+            for path in [inv.state_dir, inv.settings_file]:
+                if path:
+                    out.print(f"    {path}")
+        elif key == "config":
+            for path in inv.preset_files:
+                out.print(f"    {path}")
+
+
+def _pick_models(inv) -> list[str]:
+    out.print("  models in models.ini:")
+    for index, entry in enumerate(inv.models, start=1):
+        out.print(f"   {index:>2}. {entry.section}  {human_gb(entry.size)}")
+    answer = typer.prompt("  Numbers to remove (e.g. 1 3), a for all", default="a").strip().lower()
+    if answer in ("a", "all"):
+        return [entry.section for entry in inv.models]
+    try:
+        return [inv.models[int(token) - 1].section for token in answer.split()]
+    except (ValueError, IndexError):
+        fail(f"Pick numbers between 1 and {len(inv.models)}")
+
+
+@app.command()
+def uninstall(
+    models: bool = typer.Option(
+        False, "--models", help="Remove every model section and its files."
+    ),
+    integrations: bool = typer.Option(
+        False, "--integrations", help="opencode plugin and agent, shell aliases and completion."
+    ),
+    state_: bool = typer.Option(False, "--state", help="pid, logs, Hub cache, settings.toml."),
+    config: bool = typer.Option(False, "--config", help="models.ini and its backup."),
+    all_: bool = typer.Option(False, "--all", help="Everything above."),
+    restore_shell_line: bool = typer.Option(
+        False, "--restore-shell-line", help="Put back the retired `source local_llm.zsh` line."
+    ),
+    yes: bool = typer.Option(False, "-y", "--yes", help="Do not ask."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Only print what would be removed."),
+) -> None:
+    """Undo what local-llm put on this machine, item by item. Lists everything before deleting."""
+    st = state()
+    inv = inventory(st.paths)
+    chosen: set[str] = set(KEYS) if all_ else set()
+    selections = (
+        (models, "models"),
+        (integrations, "integrations"),
+        (state_, "state"),
+        (config, "config"),
+    )
+    for flag, key in selections:
+        if flag:
+            chosen.add(key)
+    sections = [entry.section for entry in inv.models]
+    if not chosen:
+        if dry_run:
+            chosen = set(KEYS)
+        elif yes:
+            fail(
+                "Choose what to remove: --models, --integrations, --state, --config, or --all"
+                " (see --dry-run first)."
+            )
+        else:
+            if inv.empty:
+                out.print("Nothing of local-llm's is left on this machine.")
+                out.print(f"  to remove the tool itself:  {tool_uninstall_hint()}")
+                return
+            for index, key in enumerate(KEYS, start=1):
+                out.print(f"  {index}. {key:<13} {inv.summary(key)}")
+            out.print("  5. everything")
+            answer = typer.prompt("Numbers to remove (e.g. 1 3), q to quit", default="q")
+            answer = answer.strip().lower()
+            if answer in ("q", "quit", ""):
+                raise typer.Exit()
+            if answer in ("5", "a", "all"):
+                chosen = set(KEYS)
+            else:
+                try:
+                    chosen = {KEYS[int(token) - 1] for token in answer.split()}
+                except (ValueError, IndexError):
+                    fail("Pick numbers between 1 and 5")
+            if "models" in chosen and inv.models:
+                sections = _pick_models(inv)
+    if inv.empty:
+        out.print("Nothing of local-llm's is left on this machine.")
+        out.print(f"  to remove the tool itself:  {tool_uninstall_hint()}")
+        return
+    _print_plan(inv, chosen)
+    if dry_run:
+        out.print("Dry run: nothing was removed.")
+        return
+    if not yes and not typer.confirm("Remove the items above?", default=False):
+        raise typer.Exit(1)
+    if chosen & {"models", "state", "config"}:
+        router = st.router()
+        if router.pid() is not None:
+            _stop(router)
+    if "models" in chosen and sections:
+        for line in remove_models(st.paths, sections):
+            out.print(f"  {line}")
+    if "integrations" in chosen:
+        for line in remove_integrations(inv, restore_retired=restore_shell_line):
+            out.print(f"  {line}")
+    if "state" in chosen:
+        for line in remove_state(inv):
+            out.print(f"  {line}")
+    if "config" in chosen:
+        for line in remove_config(inv):
+            out.print(f"  {line}")
+    out.print()
+    out.print(f"To remove the tool itself:  {tool_uninstall_hint()}")
