@@ -164,4 +164,40 @@ def test_uninstall_all_removes_the_codex_tables(harness):
     assert result.exit_code == 0, result.output
     text = (h.tmp / ".codex" / "config.toml").read_text()
     assert "local-llm" not in text and 'model = "gpt-5"' in text
-    assert not (h.tmp / ".codex" / "config.toml.bak").exists()
+    backup = h.tmp / ".codex" / "config.toml.local-llm.bak"
+    assert not backup.exists(), "the copy this tool made was left beside their config"
+
+
+def test_a_codex_backup_of_ours_goes_even_when_the_config_is_left_alone(harness):
+    """It is ours by its name, which nothing else on the machine ever writes."""
+    h = harness
+    populate(h.tmp)
+    codex = h.tmp / ".codex"
+    backup = codex / "config.toml.local-llm.bak"
+    backup.write_text('model = "gpt-5"\n')
+    (codex / "config.toml").write_text('model = "gpt-5"\nmodel_providers = [\n')
+
+    plan = h.run("uninstall", "--dry-run")
+    assert str(backup) in plan.output, "the plan never mentioned it"
+
+    result = h.run("uninstall", "--integrations", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert not backup.exists(), "the plan said it would go"
+    assert (codex / "config.toml").read_text() == 'model = "gpt-5"\nmodel_providers = [\n'
+
+
+def test_an_orphaned_codex_backup_is_still_found_and_removed(harness):
+    """Our tables are gone from the config, but the copy we made of it is not."""
+    h = harness
+    populate(h.tmp)
+    codex = h.tmp / ".codex"
+    (codex / "config.toml").write_text('model = "gpt-5"\n')
+    backup = codex / "config.toml.local-llm.bak"
+    backup.write_text('model = "gpt-5"\n\n[model_providers.local-llm]\nname = "local-llm"\n')
+
+    result = h.run("uninstall", "--integrations", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert not backup.exists()
+    assert (codex / "config.toml").read_text() == 'model = "gpt-5"\n' 

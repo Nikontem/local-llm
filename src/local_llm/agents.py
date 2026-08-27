@@ -119,16 +119,18 @@ def export_lines(
         **claude_env(model, preset, settings),
     }
 
-    def written(value: str) -> str:
+    def written(key: str, value: str) -> str:
+        # Matched on the name as well as the value: with a one-character key, every
+        # other line whose value happened to equal it came out as a reference too.
         # A quoted reference, not a quoted value: shlex.quote would put single quotes
-        # around it and the shell would hand the tool the variable's name.
-        if settings.api_key and value == settings.api_key:
+        # around it and the shell would hand the tool the variable's name instead.
+        if settings.api_key and key.endswith("API_KEY") and value == settings.api_key:
             return KEY_REFERENCE
         return shlex.quote(value)
 
     if shell == "fish":
-        return "".join(f"set -gx {key} {written(value)}\n" for key, value in values.items())
-    return "".join(f"export {key}={written(value)}\n" for key, value in values.items())
+        return "".join(f"set -gx {key} {written(key, value)}\n" for key, value in values.items())
+    return "".join(f"export {key}={written(key, value)}\n" for key, value in values.items())
 
 
 def exec_with_env(program: str, args: list[str], extra_env: dict[str, str]) -> NoReturn:

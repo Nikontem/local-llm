@@ -475,3 +475,52 @@ def test_an_opencode_config_that_is_not_utf8_never_stops_the_uninstall(tmp_path)
     assert any("not UTF-8" in line and str(config) in line for line in lines)
     assert not (tmp_path / ".zfunc" / "_local-llm").exists(), "the rest of the removal still ran"
     assert (tmp_path / ".bashrc").read_text() == "export B=2\n"
+
+
+def test_a_file_that_cannot_be_opened_never_stops_the_uninstall(tmp_path):
+    """A --dry-run that cannot even list what it would remove is the worst failure
+    this command has: it used to die with a traceback before printing the plan."""
+    import os
+
+    import pytest
+
+    if os.geteuid() == 0:
+        pytest.skip("root can read a mode-000 file")
+
+    paths = populate(tmp_path)
+    config = tmp_path / ".config" / "opencode" / "opencode.json"
+    zshrc = tmp_path / ".zshrc"
+    config.chmod(0o000)
+    zshrc.chmod(0o000)
+    try:
+        inv = inventory(paths, home=tmp_path, env={})
+
+        assert inv.agent_config is None and zshrc not in inv.rc_with_block
+
+        lines = remove_integrations(inv, ctx_for(tmp_path), restore_retired=True)
+
+        assert any("cannot be read" in line and str(config) in line for line in lines)
+        assert any("cannot be read" in line and str(zshrc) in line for line in lines)
+        assert not (tmp_path / ".zfunc" / "_local-llm").exists(), "the rest still ran"
+        assert (tmp_path / ".bashrc").read_text() == "export B=2\n"
+    finally:
+        config.chmod(0o644)
+        zshrc.chmod(0o644)
+
+
+def test_the_plan_does_not_offer_up_a_tiny_agent_that_is_not_ours(tmp_path):
+    """The plan is what somebody agrees to before anything is deleted, so it must not
+    say a thing will go that removal will then quite rightly leave alone."""
+    paths = populate(tmp_path)
+    config = tmp_path / ".config" / "opencode" / "opencode.json"
+    config.write_text(json.dumps({"agent": {"tiny": {"model": "anthropic/haiku"}}}))
+
+    inv = inventory(paths, home=tmp_path, env={})
+
+    assert inv.tiny_model == "anthropic/haiku" and not inv.tiny_is_ours
+    assert "tiny agent" not in inv.summary("integrations")
+
+    config.write_text(json.dumps({"agent": {"tiny": {"model": "llamacpp/b"}}}))
+    ours = inventory(paths, home=tmp_path, env={})
+
+    assert ours.tiny_is_ours and "tiny agent" in ours.summary("integrations")

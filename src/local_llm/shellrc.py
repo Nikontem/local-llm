@@ -119,6 +119,16 @@ def encoding_warning(path: Path) -> str:
     )
 
 
+def unreadable_warning(path: Path, error: Exception) -> str:
+    """The one line printed about a file that cannot be opened at all.
+
+    A permission this user does not have, or a device that is gone. Different from
+    encoding_warning, which is about a file that opens and cannot be decoded, and
+    said separately because "save it as UTF-8" is no help with either of those.
+    """
+    return f"{path} cannot be read ({error}), so it was left exactly as it is"
+
+
 def _block_spans(text: str) -> list[tuple[int, int]]:
     """Where each whole block of ours sits. Empty: no block, or markers that do not pair up.
 

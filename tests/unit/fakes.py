@@ -26,7 +26,7 @@ class FakeBackend:
         self.procs: dict[int, FakeProc] = {}
         self.next_pid = 1000
         self.spawned: list[tuple[list[str], Path]] = []
-        self.spawn_env: list[dict] = []
+        self.spawn_env: list[dict | None] = []
         self.terminated: list[int] = []
         self.killed: list[int] = []
         self.stubborn: set[int] = set()      # pids that ignore terminate()
@@ -89,7 +89,8 @@ class FakeBackend:
         pid = self.next_pid
         self.next_pid += 1
         self.spawned.append((list(args), log_path))
-        self.spawn_env.append(dict(env or {}))
+        # Kept as it came, so a test can tell an empty mapping from no mapping at all.
+        self.spawn_env.append(None if env is None else dict(env))
         self.add(pid, args, listening=self.spawn_listening)
         if self.spawn_dies:
             self.procs[pid].alive = False

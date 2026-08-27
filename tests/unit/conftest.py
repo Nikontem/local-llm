@@ -5,7 +5,7 @@ from typer.testing import CliRunner
 
 from local_llm import cli
 from local_llm.paths import Paths
-from local_llm.router import Router
+from local_llm.router import API_KEY_VARIABLE, Router
 
 from .fakes import FakeBackend, FakeHttp
 
@@ -40,7 +40,10 @@ def harness(tmp_path, monkeypatch):
     messages: list[str] = []
 
     def make_router(p, s, **kwargs):
+        # A help text naming the variable, so the CLI tests take the path a current
+        # llama.cpp gives people rather than the old-build fallback.
         return Router(p, s, backend=backend, http=http, binary="/opt/bin/llama-server",
+                      help_text=lambda binary: f"--api-key KEY (env: {API_KEY_VARIABLE})",
                       sleep=lambda seconds: None, log=messages.append)
 
     monkeypatch.setattr(cli, "Router", make_router)

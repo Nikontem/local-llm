@@ -415,3 +415,27 @@ def test_a_caller_that_has_already_warned_is_not_repeated(tmp_path):
     ctx.warned_remote = True
 
     assert not any("loopback" in line for line in codex.configure(ctx))
+
+
+def test_a_scalar_where_a_table_belongs_never_crashes_anything(tmp_path):
+    """`profiles = "work"` is the plausible typo for Codex's own top-level `profile`.
+
+    It is valid TOML, so the file parses and the wrong shape reached straight through.
+    """
+    from local_llm.integrations import codex
+
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+
+    for text in ('profiles = "work"\n', 'model_providers = "oops"\n', "profiles = [1, 2]\n"):
+        paths.config_file.write_text(text)
+        assert codex.has_tables(paths) is False
+        assert codex.configured_base_url(paths) is None
+        assert codex.current_render(paths) == ""
+        assert codex.removal_lines(paths) == []
+        assert paths.config_file.read_text() == text, "somebody's file was rewritten"
+
+    ctx = make_ctx(tmp_path)
+    paths.config_file.write_text('profiles = "work"\n')
+    lines = codex.configure(ctx)
+    assert lines and not any("Traceback" in line for line in lines)

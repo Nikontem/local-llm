@@ -63,10 +63,31 @@ def atomic_write(target: Path, text: str, *, backup: bool = True) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, destination)
+        _sync_directory(destination.parent)
     finally:
         # A failed write must not litter the directory with hidden half-files.
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _sync_directory(directory: Path) -> None:
+    """Make the rename itself durable, not only the bytes it points at.
+
+    Flushing the file guarantees its contents survive a power cut; the directory entry
+    naming them is a separate write, and without this the file can come back under its
+    old name. Not every filesystem allows a directory to be synced, and one that
+    refuses is no reason to fail a write that has already succeeded.
+    """
+    try:
+        handle = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(handle)
+    except OSError:
+        pass
+    finally:
+        os.close(handle)
 
 
 def _no_questions(prompt: str, default: bool) -> bool:

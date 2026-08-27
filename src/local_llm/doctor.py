@@ -75,15 +75,15 @@ def _output(env: Env, binary: str, flag: str) -> str:
     return (result.stdout or "") + (result.stderr or "")
 
 
-def _runs(env: Env, binary: str) -> bool:
-    """False when the binary cannot even print its help (missing library, wrong architecture)."""
-    try:
-        result = env.run([binary, "--help"], capture_output=True, text=True, timeout=_TOOL_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    text = (result.stdout or "") + (result.stderr or "")
+def _runs(help_text: str) -> bool:
+    """False when the binary cannot even print its help (missing library, wrong architecture).
+
+    Judged from help text the caller has already asked for, rather than asking again:
+    three separate checks used to run --help, and one of them has to decide whether
+    the answer means anything.
+    """
     broken = ("error while loading", "cannot execute", "Exec format error", "not found")
-    return bool(text.strip()) and not any(marker in text for marker in broken)
+    return bool(help_text.strip()) and not any(marker in help_text for marker in broken)
 
 
 def _devices(env: Env, binary: str) -> str:
@@ -121,7 +121,8 @@ def run_checks(
 
     # llama-server
     server = env.which("llama-server")
-    if server and not _runs(env, server):
+    help_text = _output(env, server, "--help") if server else ""
+    if server and not _runs(help_text):
         first = (_output(env, server, "--version").strip().splitlines() or ["no output"])[0]
         checks.append(Check(
             "llama-server", "fail", f"{server} does not run: {first}",
@@ -131,7 +132,6 @@ def run_checks(
             ),
         ))
     elif server:
-        help_text = _output(env, server, "--help")
         version = _output(env, server, "--version").strip().splitlines()
         detail = f"{server} - {version[0] if version else 'unknown version'}"
         # Only ask for devices when the flag exists (spec 4.2): an old build that
@@ -151,21 +151,6 @@ def run_checks(
                 "from December 2025 or later",
                 fix="brew upgrade llama.cpp" if brew else LINUX_LLAMA_HELP,
             ))
-        # Only worth a line when there is a key to protect. Which of the two ways it
-        # travels is decided by this same help text over in Router, so the person can
-        # see here which one their build gets.
-        if settings.api_key and API_KEY_VARIABLE in help_text:
-            checks.append(Check(
-                "api key", "ok",
-                f"passed to llama-server in {API_KEY_VARIABLE}, not on its command line",
-            ))
-        elif settings.api_key:
-            checks.append(Check(
-                "api key", "warn",
-                f"this llama-server does not read {API_KEY_VARIABLE}, so the key goes on its"
-                " command line, where any program running as you can read it with ps",
-                fix="brew upgrade llama.cpp" if brew else LINUX_LLAMA_HELP,
-            ))
     elif brew:
         checks.append(Check(
             "llama-server", "fail", "not found", fix="brew install llama.cpp",
@@ -175,6 +160,41 @@ def run_checks(
         checks.append(Check(
             "llama-server", "fail", "not found",
             fix=f"Install Homebrew first: {BREW_INSTALL}" if mac else LINUX_LLAMA_HELP,
+        ))
+
+    # api key. Outside the branches above on purpose: the run where the key is most
+    # exposed is one whose --help could not be read at all, which is exactly the branch
+    # that would otherwise say nothing. Which of the two ways the key travels is decided
+    # by this same help text over in Router, so the person can see which one they get.
+    environ = os.environ if env.environ is None else env.environ
+    upgrade = "brew upgrade llama.cpp" if brew else LINUX_LLAMA_HELP
+    if settings.api_key and API_KEY_VARIABLE in help_text:
+        checks.append(Check(
+            "api key", "ok",
+            f"passed to llama-server in {API_KEY_VARIABLE}, not on its command line",
+        ))
+    elif settings.api_key and _runs(help_text):
+        checks.append(Check(
+            "api key", "warn",
+            f"this llama-server does not read {API_KEY_VARIABLE}, so the key goes on its"
+            " command line, where any program running as you can read it with ps, and the"
+            " per-model servers it starts get no key at all",
+            fix=upgrade,
+        ))
+    elif settings.api_key:
+        checks.append(Check(
+            "api key", "warn",
+            f"this llama-server could not be asked whether it reads {API_KEY_VARIABLE}, so"
+            " the key will go on its command line, where any program running as you can"
+            " read it with ps",
+            fix=upgrade,
+        ))
+    elif environ.get(API_KEY_VARIABLE):
+        checks.append(Check(
+            "api key", "fail",
+            f"{API_KEY_VARIABLE} is set in your environment but LOCAL_LLM_API_KEY is not,"
+            " so llama-server will ask every request for a key that local-llm never sends",
+            fix=f"export LOCAL_LLM_API_KEY instead, or unset {API_KEY_VARIABLE}",
         ))
 
     # hf command

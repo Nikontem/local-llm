@@ -256,3 +256,28 @@ def test_doctor_says_which_way_the_api_key_reaches_llama_server(tmp_path):
 
     old = by_name(run_checks(paths, Settings(api_key="sk-secret"), env=mac_env()))
     assert old["api key"].status == "warn" and "ps" in old["api key"].detail
+
+
+def test_doctor_names_a_key_put_in_the_wrong_variable(tmp_path):
+    """A router started with LLAMA_API_KEY set asks every request for a key local-llm
+    never sends, and doctor's own success line is what teaches people that name."""
+    env = mac_env()
+    env.environ = {API_KEY_VARIABLE: "sk-in-the-wrong-place"}
+
+    checks = by_name(run_checks(healthy_paths(tmp_path), Settings(), env=env))
+
+    assert checks["api key"].status == "fail"
+    assert "LOCAL_LLM_API_KEY" in checks["api key"].detail
+    assert "LOCAL_LLM_API_KEY" in (checks["api key"].fix or "")
+
+
+def test_doctor_still_speaks_when_the_help_text_cannot_be_read(tmp_path):
+    """That is the run where the key is most exposed, and it used to say nothing."""
+    env = mac_env()
+    env.run = fake_run({})  # every invocation answers with nothing at all
+
+    checks = by_name(run_checks(healthy_paths(tmp_path), Settings(api_key="sk-secret"), env=env))
+
+    assert checks["llama-server"].status == "fail"
+    assert checks["api key"].status == "warn"
+    assert "could not be asked" in checks["api key"].detail

@@ -356,3 +356,60 @@ def test_the_plugin_is_read_once_so_the_diff_cannot_race_the_check(tmp_path, mon
 
     assert reads == [str(plugin)], "the plugin was read twice"
     assert any("plugin installed" in line for line in lines)
+
+
+def test_the_config_is_read_as_utf8_and_an_unreadable_one_is_reported(tmp_path, monkeypatch):
+    """It was read in whatever encoding the locale named and written back as UTF-8.
+
+    On a machine whose locale is not UTF-8 that silently turned a person's own accented
+    text into mojibake, in a file this tool does not own; on a config that is not UTF-8
+    at all it raised straight past the caller.
+    """
+    from pathlib import Path
+
+    from local_llm.integrations import opencode
+
+    ctx = make_ctx(tmp_path, yes=True)
+    ctx.config.write_text('{"note": "café résumé"}\n', encoding="utf-8")
+
+    encodings: list[object] = []
+    original = Path.read_text
+
+    def watched(self, *args, encoding=None, **kwargs):
+        if self == ctx.config:
+            encodings.append(encoding)
+        return original(self, *args, encoding=encoding, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", watched)
+    opencode.configure(ctx)
+    monkeypatch.undo()
+
+    assert encodings and set(encodings) == {"utf-8"}, "the locale's encoding was used"
+    assert "café résumé" in ctx.config.read_text(encoding="utf-8")
+
+    ctx.config.write_bytes('{"note": "caf\xe9"}\n'.encode("iso-8859-1"))
+    before = ctx.config.read_bytes()
+
+    lines = opencode.configure(ctx)
+
+    assert ctx.config.read_bytes() == before, "a config that is not UTF-8 was rewritten"
+    assert any("not UTF-8" in line and str(ctx.config) in line for line in lines)
+
+
+def test_a_config_that_cannot_be_opened_is_reported_not_raised(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from local_llm.integrations import opencode
+
+    ctx = make_ctx(tmp_path, yes=True, config="{}\n")
+    original = Path.read_text
+
+    def refuse(self, *args, **kwargs):
+        if self == ctx.config:
+            raise PermissionError(13, "Permission denied")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", refuse)
+    lines = opencode.configure(ctx)
+
+    assert any("cannot be read" in line and str(ctx.config) in line for line in lines), lines

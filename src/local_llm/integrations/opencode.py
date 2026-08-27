@@ -12,6 +12,7 @@ from importlib import resources
 from pathlib import Path
 
 from ..preset import smallest_model
+from ..shellrc import encoding_warning, unreadable_warning
 from . import HarnessContext, atomic_write, remote_note
 
 PLUGIN_NAME = "local-llm-models.js"
@@ -117,11 +118,13 @@ def merge_agent(text: str, agent: dict, name: str = "tiny") -> str | None:
     if not isinstance(agents, dict):
         return None
     agents[name] = agent
-    return json.dumps(data, indent=2) + "\n"
+    # ensure_ascii=False so a person's own accented text stays readable in their file
+    # rather than coming back as \u escapes. The write is UTF-8, so it round-trips.
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 
 def agent_snippet(agent: dict, name: str = "tiny") -> str:
-    return f'"agent": {json.dumps({name: agent}, indent=2)}'
+    return f'"agent": {json.dumps({name: agent}, indent=2, ensure_ascii=False)}'
 
 
 def _model_of(data: object) -> str | None:
@@ -211,7 +214,18 @@ def _configure(ctx: HarnessContext, *, agent: bool = True) -> list[str]:
         return lines
     model_id = f"{MODEL_PREFIX}{model}"
     target = paths.config_file or paths.new_config
-    text = target.read_text() if target.is_file() else ""
+    try:
+        # Pinned to UTF-8, and never the locale's encoding. Reading in whatever the
+        # locale happens to name and writing back as UTF-8 turns a person's own
+        # accented text into mojibake in a file this tool does not own, and the
+        # .local-llm.bak beside it is then the only copy of what it used to say.
+        text = target.read_text(encoding="utf-8") if target.is_file() else ""
+    except UnicodeDecodeError:
+        lines.append(encoding_warning(target))
+        return lines
+    except OSError as error:
+        lines.append(unreadable_warning(target, error))
+        return lines
     if current_tiny_model(text) == model_id:
         lines.append(f"tiny agent already points at {model_id} in {target}")
         return lines

@@ -32,6 +32,7 @@ from .shellrc import (
     mentions_block,
     rc_file,
     remove_block,
+    unreadable_warning,
 )
 
 KEYS = ("models", "integrations", "state", "config")
@@ -56,14 +57,17 @@ class Inventory:
     plugin: Path | None = None
     agent_config: Path | None = None
     tiny_model: str | None = None
+    tiny_is_ours: bool = False
     agent_editable: bool = False
     agent_backup: Path | None = None
     agent_not_utf8: Path | None = None
+    agent_unreadable: tuple[Path, str] | None = None
     completion_files: list[Path] = field(default_factory=list)
     rc_with_block: list[Path] = field(default_factory=list)
     rc_with_retired: list[Path] = field(default_factory=list)
     rc_with_bash_source: list[Path] = field(default_factory=list)
     rc_not_utf8: list[Path] = field(default_factory=list)
+    rc_unreadable: list[tuple[Path, str]] = field(default_factory=list)
     rc_backups: list[Path] = field(default_factory=list)
     codex_config: Path | None = None
     codex_backup: Path | None = None
@@ -87,7 +91,10 @@ class Inventory:
             parts = []
             if self.plugin:
                 parts.append("opencode plugin")
-            if self.tiny_model:
+            if self.tiny_model and self.tiny_is_ours:
+                # A tiny agent on a model the router does not serve is the person's own
+                # and removal will leave it alone, so the plan must not offer it up. The
+                # plan is what somebody agrees to before anything is deleted.
                 parts.append("opencode tiny agent")
             if self.rc_with_block:
                 parts.append("shell aliases")
@@ -95,7 +102,7 @@ class Inventory:
                 parts.append("completion")
             if self.codex_config:
                 parts.append("Codex provider and profile")
-            if self.agent_backup or self.rc_backups:
+            if self.agent_backup or self.codex_backup or self.rc_backups:
                 parts.append("the backup copies we made")
             return ", ".join(parts) or "nothing"
         if key == "state":
@@ -167,10 +174,16 @@ def inventory(
                 # every uninstall on this machine died with a traceback.
                 inv.agent_not_utf8 = candidate
                 text = ""
+            except OSError as error:
+                # A permission this user does not have, usually after a stray sudo.
+                # Same rule: reported, never listed for rewriting, never raised.
+                inv.agent_unreadable = (candidate, str(error))
+                text = ""
             model = current_tiny_model(text)
             if model:
                 inv.agent_config, inv.tiny_model = candidate, model
                 inv.agent_editable = is_strict_json(text)
+                inv.tiny_is_ours = foreign_tiny_model(text) is None
             # Ours by its name alone, whether or not a tiny agent is still in the file.
             # A config commonly holds the person's own API keys, so a copy of it left
             # beside the original is a second copy of their secrets.
@@ -184,8 +197,12 @@ def inventory(
     # removal prints the lines to delete by hand.
     if has_tables(cx) or unparsable_but_ours(cx):
         inv.codex_config = cx.config_file
-        if cx.backup.is_file():
-            inv.codex_backup = cx.backup
+    # Ours by its name alone, exactly as the opencode copy is, and found whether or not
+    # our tables are still in the config beside it. Looked for outside the branch above
+    # so that a config we will not touch, or one our tables have already left, does not
+    # leave a copy of somebody's configuration on the disk for good.
+    if cx.backup.is_file():
+        inv.codex_backup = cx.backup
 
     for shell, relative in _COMPLETION_FILES.items():
         completion = home / relative
@@ -198,6 +215,10 @@ def inventory(
         if rc.is_file():
             try:
                 content = rc.read_text(encoding="utf-8")
+            except OSError as error:
+                if not any(path == rc for path, _ in inv.rc_unreadable):
+                    inv.rc_unreadable.append((rc, str(error)))
+                continue
             except UnicodeDecodeError:
                 # Nothing here can be read, so nothing here can be edited. Reported
                 # rather than skipped in silence, and never put in a list something
@@ -283,6 +304,8 @@ def _remove_agent(config: Path) -> str:
         text = config.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return encoding_warning(config)
+    except OSError as error:
+        return unreadable_warning(config, str(error))
     if not is_strict_json(text):
         return (
             f'{config} has comments, so it is not rewritten: remove the "tiny" agent'
@@ -303,7 +326,7 @@ def _remove_agent(config: Path) -> str:
         try:
             # The rest of this file is the person's own providers, keybindings and
             # agents. Writing it in place truncates all of that if the write stops.
-            atomic_write(config, json.dumps(data, indent=2) + "\n")
+            atomic_write(config, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         except OSError as error:
             return f"could not update {config}: {error}"
         return f"removed the tiny agent from {config}"
@@ -337,6 +360,8 @@ def remove_integrations(
             lines.append(f"could not delete {inv.plugin}: {error}")
     if inv.agent_not_utf8:
         lines.append(encoding_warning(inv.agent_not_utf8))
+    if inv.agent_unreadable:
+        lines.append(unreadable_warning(*inv.agent_unreadable))
     if inv.agent_config and inv.tiny_model:
         lines.append(_remove_agent(inv.agent_config))
     # Every provider takes its own integration back out, so adding one to the registry
@@ -356,16 +381,26 @@ def remove_integrations(
     if inv.agent_config:
         # The rewrite above makes one whether or not the inventory saw an older copy.
         backups.add(backup_path(inv.agent_config))
+    if inv.codex_backup:
+        backups.add(inv.codex_backup)
+    if inv.codex_config:
+        # Removing our tables writes a fresh one, which the inventory could not have seen.
+        backups.add(backup_path(inv.codex_config))
     rc_files = {*inv.rc_with_block, *inv.rc_with_bash_source}
     if restore_retired:
         rc_files.update(inv.rc_with_retired)
     for rc in inv.rc_not_utf8:
         lines.append(encoding_warning(rc))
+    for rc, problem in inv.rc_unreadable:
+        lines.append(unreadable_warning(rc, problem))
     for rc in sorted(rc_files):
         try:
             text = rc.read_text(encoding="utf-8")
         except UnicodeDecodeError:  # re-saved between the plan and now
             lines.append(encoding_warning(rc))
+            continue
+        except OSError as error:  # or made unreadable between the plan and now
+            lines.append(unreadable_warning(rc, str(error)))
             continue
         problem = marker_problem(text)
         if problem is not None:

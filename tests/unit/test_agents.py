@@ -144,3 +144,12 @@ def test_exec_with_env_reports_missing_program(monkeypatch):
     monkeypatch.setattr("local_llm.agents.shutil.which", lambda name: None)
     with pytest.raises(AgentError, match="copilot not found in PATH"):
         exec_with_env("copilot", [], {})
+
+
+def test_only_the_key_lines_are_turned_into_references():
+    """A one-character key made every line whose value equalled it come out as one."""
+    lines = export_lines("big", PRESET, Settings(api_key="1"), Path("/c/models.ini"))
+
+    assert 'export OPENAI_API_KEY="$LOCAL_LLM_API_KEY"\n' in lines
+    assert "export DISABLE_TELEMETRY=1\n" in lines
+    assert "export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\n" in lines

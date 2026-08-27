@@ -175,6 +175,7 @@ def test_no_key_configured_adds_nothing_either_way(tmp_path):
     router.start()
 
     assert "--api-key" not in backend.spawned[0][0] and backend.spawn_env[0] == {}
+    assert backend.spawn_env[0] is not None, "an empty mapping, not no mapping at all"
 
 
 def test_the_binary_is_asked_about_the_variable_once(tmp_path):

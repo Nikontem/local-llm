@@ -99,8 +99,40 @@ def _document(paths: CodexPaths):
 
 
 def _ours(doc, parent_name: str) -> dict | None:
+    """Our table under that parent, or None when there is not one to find.
+
+    A file that parses is not a file of the shape we expect. `profiles = "work"` is
+    valid TOML and the plausible typo for Codex's own top-level `profile`, and asking
+    a string for a key used to end the whole command in a traceback. Anything that is
+    not a mapping holds nothing of ours by definition.
+    """
     parent = doc.get(parent_name)
-    return None if parent is None else _unwrap(parent.get(PROVIDER_ID))
+    if not hasattr(parent, "get"):
+        return None
+    return _unwrap(parent.get(PROVIDER_ID))
+
+
+def wrong_shape(paths: CodexPaths) -> str | None:
+    """The top-level key that is not a table where we need one, or None when all is well.
+
+    A file that parses is not a file we can write into. `profiles = "work"` is valid
+    TOML and the plausible typo for Codex's own top-level `profile`; putting our table
+    there would silently overwrite whatever the person meant by it.
+    """
+    try:
+        doc = _document(paths)
+    except UNREADABLE:
+        return None  # reported as unreadable instead, by parse_problem
+    if doc is None:
+        return None
+    return next(
+        (
+            name
+            for name in PARENTS
+            if (value := doc.get(name)) is not None and not hasattr(value, "get")
+        ),
+        None,
+    )
 
 
 def parse_problem(paths: CodexPaths) -> str | None:
@@ -212,7 +244,8 @@ def drop(paths: CodexPaths) -> list[str]:
     removed: list[str] = []
     for parent_name in PARENTS:
         parent = doc.get(parent_name)
-        if parent is None or PROVIDER_ID not in parent:
+        # Not a mapping means nothing of ours is under it, whatever it is. See _ours.
+        if not hasattr(parent, "get") or PROVIDER_ID not in parent:
             continue
         del parent[PROVIDER_ID]
         removed.append(f"[{parent_name}.{PROVIDER_ID}]")
@@ -252,6 +285,14 @@ def _configure(ctx: HarnessContext) -> list[str]:
     model = chosen_model(ctx)
     profile = profile_table(model) if model else None
     state = status(paths, provider, profile)
+
+    shape = wrong_shape(paths)
+    if shape is not None:
+        return [
+            f"{paths.config_file} has a {shape} setting that is not a table, so it is"
+            " not rewritten. Paste this into it:",
+            render(provider, profile).rstrip(),
+        ]
 
     if state == "unreadable":
         return [
