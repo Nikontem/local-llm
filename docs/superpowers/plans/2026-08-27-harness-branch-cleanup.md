@@ -8,9 +8,12 @@
 `harness-detection` branch, plus one pre-existing key-exposure fix, so the
 branch is fit to merge.
 
-**Where things stand:** branch `harness-detection`, 27 commits ahead of `main`
-at 506c5d8. `uv run pytest tests/unit -q` → 331 passed. `uv run ruff check src
-tests` → clean. Nothing is pushed and nothing is merged. The feature itself
+**Where things stand:** every task below is done, in five commits on top of
+4416498. `uv run pytest tests/unit -q` → 352 passed (was 331). `uv run ruff
+check src tests` → clean. What remains is the two Finishing items at the
+bottom: a whole-branch review, and deciding how the branch reaches `main`.
+The decisions the plan asked for are recorded under the tasks that asked
+them. Nothing is pushed and nothing is merged. The feature itself
 works: detection, the grouped menu, the Codex provider, the launchers, doctor
 and uninstall were all exercised against scratch home directories by two
 reviewers and a security reviewer.
@@ -81,7 +84,7 @@ The branch made `configure` careful about other people's files and left
 **Files:** `src/local_llm/uninstall.py`, `src/local_llm/integrations/opencode.py`,
 `tests/unit/test_uninstall.py`, `tests/unit/test_cli_uninstall.py`
 
-- [ ] **Step 1: A `tiny` agent that is not ours survives an uninstall.**
+- [x] **Step 1: A `tiny` agent that is not ours survives an uninstall.**
   `uninstall.py:266` `_remove_agent` deletes any `tiny` sub-agent from
   `opencode.json` whoever wrote it, while `opencode.configure` now refuses to
   replace one whose model does not start with `llamacpp/`. Reuse the same
@@ -90,14 +93,14 @@ The branch made `configure` careful about other people's files and left
   agent alone, reporting one line that says so and names the model. Only an
   agent on a `llamacpp/` model is ours to remove.
 
-- [ ] **Step 2: That same write must be atomic.** `_remove_agent` calls
+- [x] **Step 2: That same write must be atomic.** `_remove_agent` calls
   `config.write_text(...)`, so a crash or a full disk mid-write truncates the
   person's entire opencode configuration — the hazard already fixed on the
   configure side. Route it through `integrations.atomic_write`, the shared
   helper both integrations now use, so it gets the temporary file, the owned
   backup and the rename.
 
-- [ ] **Step 3: An opencode config that is not UTF-8 must not kill uninstall.**
+- [x] **Step 3: An opencode config that is not UTF-8 must not kill uninstall.**
   `uninstall.py:159` and `:266` read `opencode.json` with no encoding and no
   guard, so a non-UTF-8 file makes `inventory()` raise before the plan is even
   printed and *every* `uninstall` invocation dies with a traceback. Do exactly
@@ -105,7 +108,7 @@ The branch made `configure` careful about other people's files and left
   `UnicodeDecodeError`, report one line saying the file was left alone, and
   carry on with everything else.
 
-- [ ] **Step 4:** Tests for all three — a foreign `tiny` agent surviving, an
+- [x] **Step 4:** Tests for all three — a foreign `tiny` agent surviving, an
   interrupted write not truncating, and an uninstall completing with a
   non-UTF-8 opencode config present. Run the suite and ruff, then commit.
 
@@ -117,7 +120,19 @@ fixing on its own.
 **Files:** `src/local_llm/router.py`, `src/local_llm/doctor.py`,
 `tests/unit/test_router_lifecycle.py`
 
-- [ ] **Step 1:** `router.py` (around line 217) passes the API key to
+> **Decided:** the variable is `LLAMA_API_KEY`, not `LLAMA_ARG_API_KEY` as
+> this plan assumed - `--api-key` is one of the few llama.cpp options whose
+> variable does not carry the `LLAMA_ARG_` prefix. Confirmed against the
+> installed build (0.3.0, build 10621) and proved end to end: with the key
+> only in the environment, no key and a wrong key both get 401, the right
+> key gets 200, and `ps` shows nothing. For step 2 the fallback was kept:
+> the router reads `llama-server --help` once and uses `--api-key` when the
+> variable is not documented there, because a build too old to read it would
+> otherwise start with no authentication at all - worse than the problem
+> being fixed. `doctor` reports which of the two is in effect, and only when
+> a key is configured.
+
+- [x] **Step 1:** `router.py` (around line 217) passes the API key to
   `llama-server` as an `--api-key` argument, so any local process can read it
   with `ps`. Recent llama.cpp accepts `LLAMA_ARG_API_KEY` from the
   environment instead. Confirm the flag exists in the installed
@@ -125,13 +140,13 @@ fixing on its own.
   — then pass the key through the spawned process's environment rather than
   its argv.
 
-- [ ] **Step 2:** Old llama.cpp builds do not read that variable. Decide and
+- [x] **Step 2:** Old llama.cpp builds do not read that variable. Decide and
   implement the fallback: either keep the argv form when the installed version
   is too old to know the variable, or require the newer build and say so in
   `doctor`. Whichever you choose, `doctor` should be able to tell the person
   which one is in effect.
 
-- [ ] **Step 3:** A test that the key never appears in the spawned argv on the
+- [x] **Step 3:** A test that the key never appears in the spawned argv on the
   supported path. The fake process backend in `tests/unit/fakes.py` records
   every `spawn(args, log_path)`, so assert against `backend.spawned`.
 
@@ -143,37 +158,39 @@ One commit, or one per bullet if they read better apart.
 `src/local_llm/harnesses.py`, `src/local_llm/integrations/opencode.py`,
 `src/local_llm/integrations/codex.py`
 
-- [ ] Two complete marked blocks in one rc file — from an older version, or a
+- [x] Two complete marked blocks in one rc file — from an older version, or a
   paste — leave the second behind: `remove_block` removes the first and
   uninstall still reports "aliases removed". Verified live. Remove every
   block, or refuse and report, the way a half-marked file is now handled.
-- [ ] `_integrate_shell` prints "left exactly as it is" about a file typer's
+- [x] `_integrate_shell` prints "left exactly as it is" about a file typer's
   completion installer appended two lines to moments earlier. Either install
   completion after the check, or say what actually happened.
-- [ ] The non-loopback warning prints in the menu but not for `integrate
+- [x] The non-loopback warning prints in the menu but not for `integrate
   codex` or `integrate opencode` run directly, and does not mention that the
   base URL is always plain `http`, so with a remote host prompts and code
   cross the network unencrypted. Move the note into the two `configure()`
   functions and add that clause.
-- [ ] `opencode.configure` re-reads the plugin for its diff without a guard,
+- [x] `opencode.configure` re-reads the plugin for its diff without a guard,
   keeping the time-of-check gap the Codex path closes by re-parsing inside its
   guarded write.
-- [ ] `harnesses.parse_choice` duplicates `cli._numbers` and the two now give
+- [x] `harnesses.parse_choice` duplicates `cli._numbers` and the two now give
   different messages for the same bad input. Pick one.
-- [ ] Uninstall can leave a zero-byte `~/.codex/config.toml` when our tables
+- [x] Uninstall can leave a zero-byte `~/.codex/config.toml` when our tables
   were the whole file, rather than removing a file we created.
 
 ### Task 4: hardening with no realistic failure — do only if cheap
 
-- [ ] `integrations/__init__.py` chmods the temporary file by path rather than
+All five turned out cheap and all five were done.
+
+- [x] `integrations/__init__.py` chmods the temporary file by path rather than
   `os.fchmod` on the descriptor still open a line above.
-- [ ] No `fsync` before the rename: atomic against a crashing process, not
+- [x] No `fsync` before the rename: atomic against a crashing process, not
   against power loss.
-- [ ] An alias defined elsewhere in the rc, outside our marked block, is
+- [x] An alias defined elsewhere in the rc, outside our marked block, is
   silently shadowed by ours or shadows ours depending on file order.
-- [ ] `doctor.run_checks` loads `models.ini` a second time to build its
+- [x] `doctor.run_checks` loads `models.ini` a second time to build its
   harness context.
-- [ ] `_help_paragraph` in `cli.py` hard-wraps two help paragraphs at 76
+- [x] `_help_paragraph` in `cli.py` hard-wraps two help paragraphs at 76
   columns, so they do not reflow on a narrow terminal.
 
 ### Task 5: decide what `local-llm env` should do about the key
@@ -185,7 +202,15 @@ router with `eval "$(local-llm env)"`. Printing the value is inherent to that
 job; the exposure is that it lands in scrollback, shell history and pasted
 terminal output.
 
-- [ ] Decide and implement one of: leave it (documented), add `--no-key` for
+> **Decided:** the third option, and no `--no-key`. The lines now say
+> `export OPENAI_API_KEY="$LOCAL_LLM_API_KEY"`, so nothing on screen holds
+> the value and `eval` still hands the tool the real key. This is safe
+> because the key can only ever come from `LOCAL_LLM_API_KEY` in the
+> environment - it is the one setting `settings.toml` will not hold, and
+> there is no flag for it - so the variable is already there in any shell
+> that would run the output. Documented in the README.
+
+- [x] Decide and implement one of: leave it (documented), add `--no-key` for
   the common case where the router needs no key, or print
   `export OPENAI_API_KEY="$LOCAL_LLM_API_KEY"` so the value is referenced
   rather than reproduced. Whatever you choose, say it in the README where the
@@ -195,7 +220,7 @@ terminal output.
 
 ## Finishing
 
-- [ ] Full suite and ruff green.
+- [x] Full suite and ruff green. 352 passed, ruff clean.
 - [ ] A whole-branch review of everything since 506c5d8, on the most capable
   model available, pointed at this file's task list so it can tell you what is
   still open.
