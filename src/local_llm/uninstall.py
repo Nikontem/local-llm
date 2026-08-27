@@ -14,7 +14,7 @@ from pathlib import Path
 from .estimate import human_gb
 from .harnesses import PROVIDER, REGISTRY
 from .integrations import HarnessContext
-from .integrations.codex import codex_paths, has_tables
+from .integrations.codex import codex_paths, has_tables, unparsable_but_ours
 from .integrations.opencode import (
     CONFIG_CANDIDATES,
     current_tiny_model,
@@ -151,7 +151,10 @@ def inventory(
             break
 
     cx = codex_paths(home=home, env=env)
-    if has_tables(cx):
+    # A config that will not parse never reaches has_tables, which answers False on any
+    # read failure. One that names us is still ours to report: nothing is touched, and
+    # removal prints the lines to delete by hand.
+    if has_tables(cx) or unparsable_but_ours(cx):
         inv.codex_config = cx.config_file
         if cx.backup.is_file():
             inv.codex_backup = cx.backup

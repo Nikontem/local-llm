@@ -127,6 +127,24 @@ def status(paths: CodexPaths, provider: dict, profile: dict | None) -> str:
     return "same" if same_provider and same_profile else "different"
 
 
+def mentions_us(paths: CodexPaths) -> bool:
+    """Does the file name us at all? Read as bytes, because one of the ways a config
+    fails to parse is not being UTF-8, and the answer is still a plain yes or no."""
+    try:
+        return PROVIDER_ID.encode() in paths.config_file.read_bytes()
+    except OSError:
+        return False
+
+
+def unparsable_but_ours(paths: CodexPaths) -> bool:
+    """A config we cannot read that nonetheless names us.
+
+    Uninstall has to know about this file: it cannot be edited safely, so it must be
+    listed and the lines to delete by hand printed, rather than passed over in silence.
+    """
+    return parse_problem(paths) is not None and mentions_us(paths)
+
+
 def has_tables(paths: CodexPaths) -> bool:
     try:
         doc = _document(paths)
@@ -298,6 +316,8 @@ def removal_lines(paths: CodexPaths) -> list[str]:
     """Delete our tables and say what happened, for uninstall."""
     problem = parse_problem(paths)
     if problem is not None:
+        if not mentions_us(paths):
+            return []  # somebody else's broken config: nothing of ours in it to discuss
         return [
             f"{paths.config_file} does not parse ({problem}), so it is not rewritten:"
             f" delete its [model_providers.{PROVIDER_ID}] and [profiles.{PROVIDER_ID}]"

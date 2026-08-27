@@ -284,12 +284,30 @@ def test_remove_integrations_strips_only_our_codex_tables(tmp_path):
     assert any("model_providers.local-llm" in line for line in lines)
 
 
-def test_remove_integrations_refuses_an_unparsable_codex_file(tmp_path):
+def test_an_unparsable_codex_file_is_listed_reported_and_left_byte_identical(tmp_path):
+    """It cannot be edited safely, so it is named and the hand-edit lines are printed."""
     populate(tmp_path)
-    (tmp_path / ".codex" / "config.toml").write_text("[oops\n")
+    config = tmp_path / ".codex" / "config.toml"
+    broken = '[model_providers.local-llm]\nname = "local-llm"\n[oops\n'
+    config.write_bytes(broken.encode())
     inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
-    assert inv.codex_config is None, "a file we cannot read holds nothing of ours"
-    assert (tmp_path / ".codex" / "config.toml").read_text() == "[oops\n"
+    assert inv.codex_config == config, "a file that names us must reach the plan"
+    assert "Codex" in inv.summary("integrations") and not inv.empty
+
+    lines = remove_integrations(inv, ctx_for(tmp_path))
+    assert any("does not parse" in line and "by hand" in line for line in lines)
+    assert config.read_bytes() == broken.encode(), "the file was touched"
+
+
+def test_a_broken_codex_file_that_is_not_ours_is_never_mentioned(tmp_path):
+    populate(tmp_path)
+    config = tmp_path / ".codex" / "config.toml"
+    config.write_text("[oops\n")
+    inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
+    assert inv.codex_config is None, "nothing of ours is in it"
+    lines = remove_integrations(inv, ctx_for(tmp_path))
+    assert not any("does not parse" in line for line in lines)
+    assert config.read_text() == "[oops\n"
 
 
 def test_removal_goes_through_the_registry_not_a_hardcoded_list(tmp_path):

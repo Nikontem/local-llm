@@ -193,13 +193,18 @@ def test_binary_and_unreadable_files_are_reported_not_raised(tmp_path):
     provider = codex.provider_table(Settings())
     profile = codex.profile_table("small")
 
-    paths.config_file.write_bytes(b"\xff\xfe binary junk")
+    paths.config_file.write_bytes(b"\xff\xfe binary junk [model_providers.local-llm]")
     assert codex.status(paths, provider, profile) == "unreadable"
     assert codex.parse_problem(paths) is not None
     assert codex.has_tables(paths) is False
     assert codex.configured_base_url(paths) is None
     assert codex.current_render(paths) == ""
     assert any("not rewritten" in line for line in codex.removal_lines(paths))
+
+    # The same file with nothing of ours in it is somebody else's problem entirely.
+    paths.config_file.write_bytes(b"\xff\xfe binary junk")
+    assert codex.unparsable_but_ours(paths) is False
+    assert codex.removal_lines(paths) == []
 
     paths.config_file.write_text(EXISTING)
     paths.config_file.chmod(0o000)
