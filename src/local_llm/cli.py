@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import difflib
 import json
 import os
 import shlex
@@ -28,16 +27,8 @@ from .estimate import budget_bytes, estimate_bytes, human_gb
 from .gguf import GgufError, read_header, refined_estimate
 from .hardware import Machine, detect, total_ram
 from .hub import Hub, HubCache, HubError, free_disk_bytes, hf_cache_dir
-from .integrations.opencode import (
-    agent_snippet,
-    current_tiny_model,
-    install_plugin,
-    merge_agent,
-    opencode_paths,
-    plugin_source,
-    plugin_status,
-    tiny_agent,
-)
+from .integrations import HarnessContext
+from .integrations import opencode as opencode_integration
 from .logs import current_log, prune_logs, tail_lines
 from .paths import Paths
 from .preset import Preset, PresetError
@@ -46,7 +37,7 @@ from .router import Router, RouterError
 from .sampling import values_for
 from .sections import build_section, local_name, section_name
 from .settings import load_settings
-from .setup import Io, SetupContext, run_setup, smallest_model
+from .setup import Io, SetupContext, run_setup
 from .shellrc import (
     alias_lines,
     detect_shell,
@@ -1087,50 +1078,21 @@ def remove(
 # ---------------------------------------------------------------- integrations
 
 
+def _harness_context(st: State, *, yes: bool) -> HarnessContext:
+    return HarnessContext(
+        paths=st.paths,
+        settings=st.settings,
+        preset=_preset_or_none(st),
+        home=Path.home(),
+        env=os.environ,
+        say=out.print,
+        confirm=lambda prompt, default: typer.confirm(prompt, default=default),
+        yes=yes,
+    )
+
+
 def _integrate_opencode(st: State, *, agent: bool, yes: bool) -> list[str]:
-    lines: list[str] = []
-    paths = opencode_paths()
-    status = plugin_status(paths)
-    if status == "same":
-        lines.append(f"plugin already installed: {paths.plugin}")
-    else:
-        if status == "different" and not yes:
-            diff = difflib.unified_diff(
-                paths.plugin.read_text().splitlines(), plugin_source().splitlines(),
-                fromfile=str(paths.plugin), tofile="shipped plugin", lineterm="",
-            )
-            out.print("\n".join(diff))
-            if not typer.confirm(f"Replace {paths.plugin} with the shipped plugin?", default=True):
-                lines.append("plugin left as it is")
-            else:
-                install_plugin(paths)
-                lines.append(f"plugin installed: {paths.plugin}")
-        else:
-            install_plugin(paths)
-            lines.append(f"plugin installed: {paths.plugin}")
-    if not agent:
-        return lines
-    preset = _preset_or_none(st)
-    model = smallest_model(preset) if preset else None
-    if not model:
-        lines.append("no model in models.ini yet, so the tiny helper agent was not added")
-        return lines
-    model_id = f"llamacpp/{model}"
-    target = paths.config_file or paths.new_config
-    text = target.read_text() if target.is_file() else ""
-    if current_tiny_model(text) == model_id:
-        lines.append(f"tiny agent already points at {model_id} in {target}")
-        return lines
-    merged = merge_agent(text, tiny_agent(model_id))
-    if merged is None:
-        lines.append(f"{target} has comments, so it is not rewritten. Paste this into it:")
-        lines.append(agent_snippet(tiny_agent(model_id)))
-        return lines
-    if yes or typer.confirm(f"Add the tiny helper agent ({model_id}) to {target}?", default=True):
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(merged)
-        lines.append(f"tiny agent set to {model_id} in {target}")
-    return lines
+    return opencode_integration.configure(_harness_context(st, yes=yes), agent=agent)
 
 
 def _integrate_shell(st: State, shell: str, *, aliases: bool, yes: bool) -> list[str]:

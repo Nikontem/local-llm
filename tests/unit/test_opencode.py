@@ -69,3 +69,34 @@ def test_merge_agent_into_strict_json_only():
     assert current_tiny_model(merged) == "llamacpp/x"
     commented = '{"agent": {"tiny": {"model": "llamacpp/old"}}, // c\n}'
     assert current_tiny_model(commented) == "llamacpp/old"
+
+
+def test_configure_installs_the_plugin_and_the_tiny_agent(tmp_path):
+    from local_llm.integrations import HarnessContext, opencode
+    from local_llm.paths import Paths
+    from local_llm.preset import Preset
+    from local_llm.settings import Settings
+
+    paths = Paths.from_env(env={}, home=tmp_path)
+    paths.config_dir.mkdir(parents=True)
+    blob = tmp_path / "small.gguf"
+    blob.write_bytes(b"x" * 10)
+    paths.preset.write_text(f"[*]\nc = 8192\n[small]\nmodel = {blob}\n")
+    config_dir = tmp_path / ".config" / "opencode"
+    config_dir.mkdir(parents=True)
+    (config_dir / "opencode.json").write_text("{}\n")
+    ctx = HarnessContext(
+        paths=paths,
+        settings=Settings(),
+        preset=Preset.load(paths.preset),
+        home=tmp_path,
+        env={},
+        say=lambda line: None,
+        yes=True,
+    )
+    lines = opencode.configure(ctx)
+    assert (config_dir / "plugins" / PLUGIN_NAME).is_file()
+    assert '"tiny"' in (config_dir / "opencode.json").read_text()
+    assert any("plugin installed" in line for line in lines)
+    assert opencode.harness_status(ctx) == "same"
+    assert any("already" in line for line in opencode.configure(ctx))

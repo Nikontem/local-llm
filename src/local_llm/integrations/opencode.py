@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
@@ -9,6 +10,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
+
+from ..preset import smallest_model
+from . import HarnessContext
 
 PLUGIN_NAME = "local-llm-models.js"
 CONFIG_CANDIDATES = ("opencode.jsonc", "opencode.json", "config.json")
@@ -95,3 +99,60 @@ def agent_snippet(agent: dict, name: str = "tiny") -> str:
 def current_tiny_model(text: str) -> str | None:
     match = _TINY_MODEL.search(text)
     return match.group(1) if match else None
+
+
+def configure(ctx: HarnessContext, *, agent: bool = True) -> list[str]:
+    """Install the plugin, and by default the tiny helper agent."""
+    paths = opencode_paths(home=ctx.home, env=ctx.env)
+    lines: list[str] = []
+    state = plugin_status(paths)
+    if state == "same":
+        lines.append(f"plugin already installed: {paths.plugin}")
+    else:
+        replace = True
+        if state == "different":
+            ctx.say(
+                "\n".join(
+                    difflib.unified_diff(
+                        paths.plugin.read_text().splitlines(),
+                        plugin_source().splitlines(),
+                        fromfile=str(paths.plugin),
+                        tofile="shipped plugin",
+                        lineterm="",
+                    )
+                )
+            )
+            replace = ctx.ask(f"Replace {paths.plugin} with the shipped plugin?", True)
+        if not replace:
+            lines.append("plugin left as it is")
+        else:
+            install_plugin(paths)
+            lines.append(f"plugin installed: {paths.plugin}")
+
+    if not agent:
+        return lines
+    model = smallest_model(ctx.preset) if ctx.preset is not None else None
+    if not model:
+        lines.append("no model in models.ini yet, so the tiny helper agent was not added")
+        return lines
+    model_id = f"llamacpp/{model}"
+    target = paths.config_file or paths.new_config
+    text = target.read_text() if target.is_file() else ""
+    if current_tiny_model(text) == model_id:
+        lines.append(f"tiny agent already points at {model_id} in {target}")
+        return lines
+    merged = merge_agent(text, tiny_agent(model_id))
+    if merged is None:
+        lines.append(f"{target} has comments, so it is not rewritten. Paste this into it:")
+        lines.append(agent_snippet(tiny_agent(model_id)))
+        return lines
+    if ctx.ask(f"Add the tiny helper agent ({model_id}) to {target}?", True):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(merged)
+        lines.append(f"tiny agent set to {model_id} in {target}")
+    return lines
+
+
+def harness_status(ctx: HarnessContext) -> str:
+    """missing, same or different, judged on the plugin file alone."""
+    return plugin_status(opencode_paths(home=ctx.home, env=ctx.env))
