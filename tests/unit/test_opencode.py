@@ -100,3 +100,95 @@ def test_configure_installs_the_plugin_and_the_tiny_agent(tmp_path):
     assert any("plugin installed" in line for line in lines)
     assert opencode.harness_status(ctx) == "same"
     assert any("already" in line for line in opencode.configure(ctx))
+
+
+# A tiny agent somebody set up themselves, on a model this tool never serves.
+THEIRS = {
+    "$schema": "https://opencode.ai/config.json",
+    "provider": {"anthropic": {"options": {"apiKey": "sk-mine"}}},
+    "agent": {"tiny": {"mode": "subagent", "model": "anthropic/claude-haiku-4-5"}},
+}
+
+
+def make_ctx(tmp_path, *, yes=True, answers=None, config=None):
+    """A context in a scratch home, with one model called small and a config to match."""
+    from local_llm.integrations import HarnessContext
+    from local_llm.paths import Paths
+    from local_llm.preset import Preset
+    from local_llm.settings import Settings
+
+    paths = Paths.from_env(env={}, home=tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    blob = tmp_path / "small.gguf"
+    blob.write_bytes(b"x" * 10)
+    paths.preset.write_text(f"[*]\nc = 8192\n[small]\nmodel = {blob}\n")
+    config_dir = tmp_path / ".config" / "opencode"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    if config is not None:
+        (config_dir / "opencode.json").write_text(config)
+    asked: list[tuple[str, bool]] = []
+    replies = list(answers or [])
+
+    def confirm(prompt: str, default: bool) -> bool:
+        asked.append((prompt, default))
+        return replies.pop(0) if replies else default
+
+    ctx = HarnessContext(
+        paths=paths,
+        settings=Settings(),
+        preset=Preset.load(paths.preset),
+        home=tmp_path,
+        env={},
+        say=lambda line: None,
+        confirm=confirm,
+        yes=yes,
+    )
+    ctx.asked = asked  # type: ignore[attr-defined]
+    ctx.config = config_dir / "opencode.json"  # type: ignore[attr-defined]
+    return ctx
+
+
+def test_the_config_is_copied_aside_and_replaced_in_one_step(tmp_path):
+    """A crash or a full disk mid-write used to truncate the whole opencode config."""
+    from local_llm.integrations import opencode
+
+    original = json.dumps(THEIRS, indent=2) + "\n"
+    ctx = make_ctx(tmp_path, yes=False, answers=[True], config=original)
+
+    opencode.configure(ctx)
+
+    backup = ctx.config.with_name("opencode.json.local-llm.bak")
+    assert backup.read_text() == original
+    assert not list(ctx.config.parent.glob(".opencode.json.*")), "no temporary file left behind"
+
+
+def test_a_symlinked_opencode_config_stays_a_symlink(tmp_path):
+    """A config linked into a dotfiles repository is written through, not replaced."""
+    from local_llm.integrations import opencode
+
+    ctx = make_ctx(tmp_path, yes=True)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    real = dotfiles / "opencode.json"
+    real.write_text('{"$schema": "https://opencode.ai/config.json"}\n')
+    ctx.config.symlink_to(real)
+
+    opencode.configure(ctx)
+
+    assert ctx.config.is_symlink(), "the link was replaced by a regular file"
+    assert json.loads(real.read_text())["agent"]["tiny"]["model"] == "llamacpp/small"
+    assert not list(dotfiles.glob(".opencode.json.*")), "no temporary file left behind"
+
+
+def test_a_write_that_fails_is_reported_not_raised(tmp_path, monkeypatch):
+    from local_llm.integrations import opencode
+
+    ctx = make_ctx(tmp_path, yes=True, config="{}\n")
+
+    def refuse(source, destination):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(opencode.os, "replace", refuse)
+    lines = opencode.configure(ctx)
+    assert any("could not write" in line for line in lines)
+    assert any("could not update" in line for line in lines)

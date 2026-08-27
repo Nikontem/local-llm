@@ -12,7 +12,7 @@ from importlib import resources
 from pathlib import Path
 
 from ..preset import smallest_model
-from . import HarnessContext
+from . import HarnessContext, atomic_write
 
 PLUGIN_NAME = "local-llm-models.js"
 CONFIG_CANDIDATES = ("opencode.jsonc", "opencode.json", "config.json")
@@ -59,8 +59,10 @@ def plugin_status(paths: OpencodePaths) -> str:
 
 
 def install_plugin(paths: OpencodePaths) -> Path:
-    paths.plugin.parent.mkdir(parents=True, exist_ok=True)
-    paths.plugin.write_text(plugin_source())
+    # No backup: the plugin file is ours from top to bottom, written from the copy
+    # shipped inside the package and deleted again by uninstall. The atomic part still
+    # matters, because half a plugin file is an opencode that will not start.
+    atomic_write(paths.plugin, plugin_source(), backup=False)
     return paths.plugin
 
 
@@ -134,8 +136,13 @@ def configure(ctx: HarnessContext, *, agent: bool = True) -> list[str]:
         if not replace:
             lines.append("plugin left as it is")
         else:
-            install_plugin(paths)
-            lines.append(f"plugin installed: {paths.plugin}")
+            try:
+                install_plugin(paths)
+            except OSError as error:
+                # A read-only home or a full disk: say so, never raise at the person.
+                lines.append(f"could not write {paths.plugin}: {error}")
+            else:
+                lines.append(f"plugin installed: {paths.plugin}")
 
     if not agent:
         return lines
@@ -154,10 +161,16 @@ def configure(ctx: HarnessContext, *, agent: bool = True) -> list[str]:
         lines.append(f"{target} has comments, so it is not rewritten. Paste this into it:")
         lines.append(agent_snippet(tiny_agent(model_id)))
         return lines
-    if ctx.ask(f"Add the tiny helper agent ({model_id}) to {target}?", True):
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(merged)
-        lines.append(f"tiny agent set to {model_id} in {target}")
+    if not ctx.ask(f"Add the tiny helper agent ({model_id}) to {target}?", True):
+        lines.append(f"tiny agent not added to {target}")
+        return lines
+    try:
+        # The rest of this file is the person's own providers, keybindings and agents.
+        atomic_write(target, merged)
+    except OSError as error:
+        lines.append(f"could not update {target}: {error}")
+        return lines
+    lines.append(f"tiny agent set to {model_id} in {target}")
     return lines
 
 
