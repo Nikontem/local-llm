@@ -27,26 +27,22 @@ suggestion is computed from your actual machine rather than a fixed list.
 curl -fsSL https://raw.githubusercontent.com/Nikontem/local-llm/main/install.sh | sh
 ```
 
-The script uses Homebrew when it finds one on your PATH (it asks first,
-defaulting to Homebrew) and falls back to [`uv`](https://astral.sh/uv)
-otherwise, installing `uv` itself if needed. Force one path with a flag:
-
-```
-sh install.sh --brew        # brew tap nikontem/tap && brew install local-llm
-sh install.sh --uv          # uv tool install git+https://github.com/Nikontem/local-llm
-sh install.sh -y             # no --brew/--uv: skips the Homebrew/uv prompt (Homebrew wins if present)
-sh install.sh --upgrade     # reinstall the latest version
-```
-
-Homebrew also installs `llama.cpp` (for `llama-server`) and `hf` (Hugging
-Face's CLI, used for `hf auth login`) as dependencies of the `local-llm`
-formula, so nothing extra to install on that path.
+The script installs the tool with [`uv`](https://astral.sh/uv), installing
+`uv` itself first if needed, on macOS and Linux. Homebrew is not required for
+the tool. It matters for what the tool installs *for you*: when Homebrew is
+present, `local-llm setup` installs `llama.cpp` (for `llama-server`) and `hf`
+(Hugging Face's CLI) through it, so they stay managed by Homebrew like the
+rest of your machine; when it is absent, `setup` shows the routes — Homebrew
+from [brew.sh](https://brew.sh), llama.cpp's release binaries, or a build.
 
 To install by hand instead of running the script:
 
 ```
 uv tool install git+https://github.com/Nikontem/local-llm
 ```
+
+Upgrade later with `sh install.sh --upgrade` or
+`uv tool install --upgrade git+https://github.com/Nikontem/local-llm`.
 
 Either way, the next step is the same:
 

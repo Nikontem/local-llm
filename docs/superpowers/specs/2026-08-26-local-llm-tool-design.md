@@ -49,7 +49,7 @@ It packages, in a portable and testable form, the setup that exists today in
 | Name | command `local-llm`, package `local_llm`, repo `Nikontem/local-llm` |
 | Model files | downloaded with the `huggingface_hub` library into the standard Hugging Face cache (`~/.cache/huggingface/hub`); preset sections use absolute paths (`model = /abs/file.gguf`) |
 | Recommendations | computed from this machine and live Hugging Face data; no model list in the tool; every suggestion overridable (repo, quantization, file, context, flags) |
-| Install paths | `install.sh` offers Homebrew tap (preferred when `brew` exists) or `uv tool install`; a `Nikontem/homebrew-tap` formula is part of version 1 |
+| Install paths | `install.sh` installs the tool with `uv`; Homebrew, when present, is how `setup` installs llama.cpp and `hf` (no tap for the tool itself) |
 | Supervision | `local-llm up` starts a detached `llama-server` with a pid file, like today; no OS service in version 1 |
 | License | MIT |
 | Repo location on this machine | `~/.config/local-llm/local-llm/` |
@@ -753,8 +753,7 @@ Four layers, from cheapest to most realistic.
    with no `llama-server` process left, and `local-llm completion install`
    for bash. This is the clean-machine proof for Linux and answers "does the
    installer work from nothing". It runs on this Mac's Docker (arm64) and in
-   CI. A second, manual target `run.sh --brew` installs Homebrew on Linux
-   inside the image and takes the brew path; it is slow and not part of CI.
+   CI.
 3. **macOS acceptance on this Mac**: `setup` end to end against the real
    Metal build and the models already in the cache; then `local-llm claude`
    with the default model; then the migration in section 18.4. A "pretend
@@ -777,20 +776,14 @@ e2e on such a machine (the README asks for that report).
   "local_llm.cli:app"`; `requires-python = ">=3.11"`; lower-bounded
   dependencies; `uv.lock` committed; `ruff` configured; version in
   `local_llm/__init__.py` starting at `0.1.0`.
-- `install.sh` (POSIX sh): flags `--brew`, `--uv`, `-y`, `--upgrade`. Detects
-  the OS. If `brew` exists, asks "Homebrew (recommended, brew manages
-  updates) or uv?" defaulting to Homebrew; without `brew`, uses uv. The brew
-  path runs `brew tap nikontem/tap && brew install local-llm`. The uv path
-  installs uv with the official installer when missing, then
+- `install.sh` (POSIX sh): flags `--upgrade`, `--help`. Installs uv with the
+  official installer when missing, then
   `uv tool install git+https://github.com/Nikontem/local-llm` (with
-  `--upgrade` when asked) and runs `uv tool update-shell` so `~/.local/bin`
-  is on PATH. Both end with "run `local-llm setup`".
-- Homebrew tap: repo `Nikontem/homebrew-tap`, `Formula/local-llm.rb` using
-  `Language::Python::Virtualenv`, `depends_on "python@3.13"`, `"llama.cpp"`,
-  `"hf"`; resources generated with `brew update-python-resources`; `url` is
-  the `v0.1.0` release tarball with its sha256; `head` points at `main`;
-  `test do` runs `local-llm --version`. Published after the main repo is
-  tagged.
+  `--upgrade` when asked) and `uv tool update-shell`. It reports whether
+  Homebrew was found — because `setup` will install llama.cpp and `hf`
+  through it — and ends with "run `local-llm setup`". There is no Homebrew
+  formula for the tool: Homebrew is the channel for what the tool installs
+  on the person's behalf, never for the tool itself.
 
 ## 18. Repository, git, rollout
 
@@ -819,7 +812,7 @@ repo's `.gitignore` covers Python build output, `.venv`, and editor files.
 Ported from the existing README: quick start, every command with a real
 example, switching models by request, coding agents, memory (sleep and
 budgeting), the settings table, troubleshooting, file locations. New sections:
-install (both paths), `setup` walk-through, recommendations and search,
+install, `setup` walk-through, recommendations and search,
 platform notes (macOS first class, Linux first class on CPU and best effort on
 GPU, Windows untested), and a short "how this relates to Ollama, LM Studio and
 llama.cpp's own router" paragraph so expectations are honest.
@@ -828,7 +821,7 @@ llama.cpp's own router" paragraph so expectations are honest.
 
 The author runs `gh auth login -h github.com` for the `Nikontem` account. Then,
 after explicit confirmation: `gh repo create Nikontem/local-llm --public
---source=. --remote=origin --push`, and later `Nikontem/homebrew-tap`. The
+--source=. --remote=origin --push`. The
 `v0.1.0` tag is created after the macOS acceptance passes.
 
 ### 18.4 Migration of this machine
@@ -860,7 +853,7 @@ where it is. Copy, not move, because the file is still being written.
 3. **First run** — `setup`, `integrate opencode`, `completion install`,
    `install.sh`, README, CI, Docker end-to-end.
 4. **Release** — macOS acceptance, migration of this machine, GitHub push,
-   `v0.1.0`, Homebrew tap, session copy.
+   `v0.1.0`, session copy.
 
 ## 20. Risks
 

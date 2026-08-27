@@ -27,5 +27,6 @@ First release.
 - `claude`, `copilot`, `env`: point Claude Code, GitHub Copilot CLI and any
   OpenAI- or Anthropic-style tool at the router; `integrate opencode` installs
   the plugin that lists every model in opencode.
-- `install.sh`: Homebrew tap when Homebrew is present, otherwise `uv`.
+- `install.sh`: installs the tool with `uv`; when Homebrew is present, `setup`
+  installs llama.cpp and `hf` through it.
 - macOS and Linux (CPU, and best effort on NVIDIA/AMD); Windows untested.
