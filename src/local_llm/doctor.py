@@ -6,8 +6,9 @@ import platform
 import shutil
 import socket
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from . import hub
 from .paths import Paths
@@ -60,6 +61,8 @@ class Env:
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run
     token_status: Callable[[], hub.TokenStatus] = hub.token_status
     port_in_use: Callable[[str, int], bool] = port_in_use
+    home: Path | None = None
+    environ: Mapping[str, str] | None = None
 
 
 def _output(env: Env, binary: str, flag: str) -> str:
@@ -253,10 +256,21 @@ def run_checks(
         ))
 
     # agents
-    present = [name for name in ("claude", "copilot", "opencode") if env.which(name)]
-    absent = [name for name in ("claude", "copilot", "opencode") if not env.which(name)]
-    detail = "found: " + (", ".join(present) or "none")
-    if absent:
-        detail += "; not found: " + ", ".join(absent)
+    from . import harnesses
+    from .integrations.codex import codex_paths, configured_base_url
+
+    installed, missing = harnesses.detect(env.which)
+    detail = "found: " + (", ".join(h.title for h in installed) or "none")
+    if missing:
+        detail += "; not found: " + ", ".join(h.title for h in missing)
     checks.append(Check("agents", "ok", detail))
+
+    codex_file = codex_paths(home=env.home, env=env.environ)
+    written = configured_base_url(codex_file)
+    if written is not None and written != settings.openai_base_url:
+        checks.append(Check(
+            "codex config", "warn",
+            f"{codex_file.config_file} points at {written}, not {settings.openai_base_url}",
+            fix="local-llm integrate codex",
+        ))
     return checks

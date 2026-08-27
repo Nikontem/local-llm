@@ -63,7 +63,7 @@ def test_everything_ok_on_a_healthy_mac(tmp_path):
     assert checks["hf token"].detail == "logged in as nikos"
     assert checks["models.ini"].detail == "1 model(s), all files present"
     assert checks["port"].detail == "5678 is free"
-    assert "claude" in checks["agents"].detail
+    assert "Claude Code" in checks["agents"].detail
 
 
 def test_missing_brew_on_mac_is_fatal_and_optional_on_linux(tmp_path):
@@ -163,3 +163,51 @@ def test_llama_server_that_cannot_run_is_reported_as_such(tmp_path):
     assert "does not run" in checks["llama-server"].detail
     assert "libgomp" in checks["llama-server"].detail
     assert "router support" not in checks
+
+
+def test_agents_check_names_every_harness_in_the_registry(tmp_path):
+    from local_llm.doctor import Env, run_checks
+    from local_llm.paths import Paths
+    from local_llm.settings import Settings
+
+    paths = Paths.from_env(env={}, home=tmp_path)
+    env = Env(
+        system="Darwin",
+        machine="arm64",
+        which=lambda name: "/usr/local/bin/codex" if name == "codex" else None,
+        token_status=lambda: __import__(
+            "local_llm.hub", fromlist=["TokenStatus"]
+        ).TokenStatus("valid", "someone"),
+        port_in_use=lambda host, port: False,
+    )
+    checks = {c.name: c for c in run_checks(paths, Settings(), env=env)}
+    detail = checks["agents"].detail
+    assert "OpenAI Codex CLI" in detail
+    assert "Qwen Code" in detail and "Antigravity CLI" in detail
+
+
+def test_codex_config_check_warns_when_the_address_moved(tmp_path):
+    from local_llm.doctor import Env, run_checks
+    from local_llm.integrations import codex
+    from local_llm.paths import Paths
+    from local_llm.settings import Settings
+
+    paths = Paths.from_env(env={}, home=tmp_path)
+    cx = codex.codex_paths(home=tmp_path, env={})
+    codex.write(cx, codex.provider_table(Settings(port=5678)), None)
+    env = Env(
+        system="Darwin",
+        machine="arm64",
+        which=lambda name: None,
+        token_status=lambda: __import__(
+            "local_llm.hub", fromlist=["TokenStatus"]
+        ).TokenStatus("valid", "someone"),
+        port_in_use=lambda host, port: False,
+        home=tmp_path,
+        environ={},
+    )
+    ok = {c.name: c for c in run_checks(paths, Settings(port=5678), env=env)}
+    assert "codex config" not in ok
+    moved = {c.name: c for c in run_checks(paths, Settings(port=9999), env=env)}
+    assert moved["codex config"].status == "warn"
+    assert "integrate codex" in moved["codex config"].fix
