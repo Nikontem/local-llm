@@ -348,7 +348,7 @@ def step_integrations(ctx: SetupContext) -> None:
         io.say(f"  {harness.title}")
         try:
             lines = ctx.configure_harness(harness)
-        except OSError as error:  # one agent failing never stops the rest
+        except Exception as error:  # one agent failing never stops the rest
             lines = [f"could not configure {harness.title}: {error}"]
         for line in lines:
             io.say(f"    {line}")

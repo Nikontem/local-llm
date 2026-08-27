@@ -304,3 +304,25 @@ def test_step_six_asks_harness_questions_through_io(tmp_path):
     ctx.harness_status = lambda h: "missing"
     step_integrations(ctx)
     assert asked == ["codex"] and "did it" in script.text()
+
+
+def test_step_six_survives_a_harness_that_raises_anything(tmp_path):
+    """A failing agent is one printed line; the wizard must reach step 7 regardless."""
+    from local_llm.setup import step_integrations
+
+    script = Script(confirms=[True])
+    ctx = make_ctx(tmp_path, script, yes=True, tools={"codex": "/x", "aider": "/y"})
+    done: list[str] = []
+
+    def configure(harness):
+        if harness.key == "codex":
+            raise ValueError("something nobody predicted")
+        done.append(harness.key)
+        return [f"{harness.key} done"]
+
+    ctx.configure_harness = configure
+    ctx.harness_status = lambda h: "missing"
+    step_integrations(ctx)
+    text = script.text()
+    assert "could not configure OpenAI Codex CLI: something nobody predicted" in text
+    assert done == ["aider"] and "aider done" in text

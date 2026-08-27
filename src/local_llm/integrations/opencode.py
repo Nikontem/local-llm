@@ -51,7 +51,9 @@ def plugin_status(paths: OpencodePaths) -> str:
         return "missing"
     try:
         current = paths.plugin.read_text()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # A plugin whose bytes are not valid UTF-8 is as unreadable as one we
+        # are not allowed to open, and neither may reach the caller as an exception.
         return "unreadable"
     return "same" if current == plugin_source() else "different"
 

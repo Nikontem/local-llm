@@ -1258,7 +1258,7 @@ def integrate_menu(ctx: typer.Context, yes: bool = typer.Option(
         out.print(f"  {harness.title}")
         try:
             lines = harness.configure(context) if harness.configure else _launcher_lines(harness)
-        except OSError as error:
+        except Exception as error:  # one agent failing never stops the rest of the loop
             lines = [f"could not configure {harness.title}: {error}"]
         for line in lines:
             out.print(f"    {line}")

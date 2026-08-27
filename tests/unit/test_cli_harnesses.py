@@ -158,3 +158,39 @@ def test_the_fixture_isolates_other_tools_config_directories(harness, monkeypatc
 
     assert "CODEX_HOME" not in os.environ
     assert "OPENCODE_CONFIG_DIR" not in os.environ
+
+
+def test_a_plugin_that_is_not_utf8_does_not_end_the_menu(harness):
+    """The whole run used to die here: Codex was configured, then a traceback."""
+    h = harness
+    fake_which(h.monkeypatch, "codex", "opencode", "claude")
+    plugin = h.tmp / ".config" / "opencode" / "plugins" / "local-llm-models.js"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_bytes(b"\xff\xfe not valid utf-8 at all")
+    result = h.run("integrate", "--yes")
+    assert result.exit_code == 0, result.output
+    assert "[model_providers.local-llm]" in (h.tmp / ".codex" / "config.toml").read_text()
+    assert "cannot be read" in result.output
+    assert "local-llm claude" in result.output, "the harnesses after opencode still ran"
+    assert plugin.read_bytes() == b"\xff\xfe not valid utf-8 at all"
+
+
+def test_a_harness_that_raises_does_not_stop_the_ones_after_it(harness):
+    """Anything a harness can throw is one printed line, never the end of the loop."""
+    import dataclasses
+
+    from local_llm import harnesses
+
+    h = harness
+
+    def explode(ctx):
+        raise ValueError("something nobody predicted")
+
+    broken = dataclasses.replace(harnesses.find("codex"), configure=explode)
+    registry = tuple(broken if entry.key == "codex" else entry for entry in harnesses.REGISTRY)
+    h.monkeypatch.setattr(harnesses, "REGISTRY", registry)
+    fake_which(h.monkeypatch, "codex", "claude")
+    result = h.run("integrate", "--yes")
+    assert result.exit_code == 0, result.output
+    assert "could not configure OpenAI Codex CLI: something nobody predicted" in result.output
+    assert "local-llm claude" in result.output
