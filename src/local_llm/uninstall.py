@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .estimate import human_gb
+from .integrations.codex import codex_paths, has_tables, paths_for, removal_lines
 from .integrations.opencode import (
     CONFIG_CANDIDATES,
     current_tiny_model,
@@ -49,6 +50,8 @@ class Inventory:
     rc_with_block: list[Path] = field(default_factory=list)
     rc_with_retired: list[Path] = field(default_factory=list)
     rc_with_bash_source: list[Path] = field(default_factory=list)
+    codex_config: Path | None = None
+    codex_backup: Path | None = None
     state_dir: Path | None = None
     settings_file: Path | None = None
     preset_files: list[Path] = field(default_factory=list)
@@ -75,6 +78,8 @@ class Inventory:
                 parts.append("shell aliases")
             if self.completion_files or self.rc_with_bash_source:
                 parts.append("completion")
+            if self.codex_config:
+                parts.append("Codex provider and profile")
             return ", ".join(parts) or "nothing"
         if key == "state":
             parts = []
@@ -142,6 +147,12 @@ def inventory(
                 inv.agent_config, inv.tiny_model = candidate, model
                 inv.agent_editable = is_strict_json(text)
             break
+
+    cx = codex_paths(home=home, env=env)
+    if has_tables(cx):
+        inv.codex_config = cx.config_file
+        if cx.backup.is_file():
+            inv.codex_backup = cx.backup
 
     for shell, relative in _COMPLETION_FILES.items():
         completion = home / relative
@@ -252,6 +263,18 @@ def remove_integrations(inv: Inventory, *, restore_retired: bool = False) -> lis
                 f'{inv.agent_config} has comments, so it is not rewritten: remove the "tiny" agent'
                 " entry from it by hand"
             )
+    if inv.codex_config:
+        cx = paths_for(inv.codex_config)
+        lines.extend(removal_lines(cx))
+        # drop() writes a fresh .bak as it edits, so the path is resolved again here
+        # rather than taken from the inventory: a file with no backup at inventory
+        # time still gets one, and it must go too.
+        if cx.backup.exists():
+            try:
+                cx.backup.unlink()
+                lines.append(f"deleted {cx.backup}")
+            except OSError as error:
+                lines.append(f"could not delete {cx.backup}: {error}")
     rc_files = {*inv.rc_with_block, *inv.rc_with_bash_source}
     if restore_retired:
         rc_files.update(inv.rc_with_retired)

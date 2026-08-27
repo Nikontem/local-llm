@@ -63,6 +63,18 @@ def populate(home: Path, *, jsonc: bool = False) -> Paths:
     (home / ".bash_completions").mkdir()
     (home / ".bash_completions" / "local-llm.sh").write_text("complete")
     (home / ".bashrc").write_text(f"source {home}/.bash_completions/local-llm.sh\nexport B=2\n")
+    codex_dir = home / ".codex"
+    codex_dir.mkdir(parents=True, exist_ok=True)
+    (codex_dir / "config.toml").write_text(
+        'model = "gpt-5"\n\n'
+        "[model_providers.local-llm]\n"
+        'name = "local-llm"\n'
+        'base_url = "http://127.0.0.1:5678/v1"\n'
+        'wire_api = "responses"\n\n'
+        "[profiles.local-llm]\n"
+        'model = "b"\n'
+        'model_provider = "local-llm"\n'
+    )
     return paths
 
 
@@ -239,3 +251,27 @@ def test_retired_line_alone_counts_as_nothing_left(tmp_path):
     (tmp_path / ".zshrc").write_text(f"{RETIRED_PREFIX}source x\n")
     inv = inventory(paths, home=tmp_path, env={})
     assert inv.rc_with_retired and inv.empty
+
+
+def test_inventory_finds_the_codex_tables(tmp_path):
+    populate(tmp_path)
+    inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
+    assert inv.codex_config == tmp_path / ".codex" / "config.toml"
+    assert "Codex" in inv.summary("integrations")
+
+
+def test_remove_integrations_strips_only_our_codex_tables(tmp_path):
+    populate(tmp_path)
+    inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
+    lines = remove_integrations(inv)
+    text = (tmp_path / ".codex" / "config.toml").read_text()
+    assert "local-llm" not in text and 'model = "gpt-5"' in text
+    assert any("model_providers.local-llm" in line for line in lines)
+
+
+def test_remove_integrations_refuses_an_unparsable_codex_file(tmp_path):
+    populate(tmp_path)
+    (tmp_path / ".codex" / "config.toml").write_text("[oops\n")
+    inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
+    assert inv.codex_config is None, "a file we cannot read holds nothing of ours"
+    assert (tmp_path / ".codex" / "config.toml").read_text() == "[oops\n"

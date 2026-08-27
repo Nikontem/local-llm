@@ -79,3 +79,14 @@ def test_zero_and_out_of_range_numbers_are_refused(harness):
     zero_menu = h.run("uninstall", input="0\n")
     assert zero_menu.exit_code == 1 and "Pick numbers between 1 and 4" in zero_menu.output
     assert Preset.load(paths.preset).sections() == ["a", "b"]
+
+
+def test_uninstall_all_removes_the_codex_tables(harness):
+    h = harness
+    populate(h.tmp)
+    assert h.run("uninstall", "--dry-run").output.count("config.toml") >= 1
+    result = h.run("uninstall", "--all", "--yes")
+    assert result.exit_code == 0, result.output
+    text = (h.tmp / ".codex" / "config.toml").read_text()
+    assert "local-llm" not in text and 'model = "gpt-5"' in text
+    assert not (h.tmp / ".codex" / "config.toml.bak").exists()
