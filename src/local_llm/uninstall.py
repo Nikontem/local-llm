@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .estimate import human_gb
 from .harnesses import PROVIDER, REGISTRY
-from .integrations import HarnessContext, atomic_write
+from .integrations import HarnessContext, atomic_write, backup_path
 from .integrations.codex import codex_paths, has_tables, unparsable_but_ours
 from .integrations.opencode import (
     CONFIG_CANDIDATES,
@@ -56,11 +56,13 @@ class Inventory:
     agent_config: Path | None = None
     tiny_model: str | None = None
     agent_editable: bool = False
+    agent_backup: Path | None = None
     completion_files: list[Path] = field(default_factory=list)
     rc_with_block: list[Path] = field(default_factory=list)
     rc_with_retired: list[Path] = field(default_factory=list)
     rc_with_bash_source: list[Path] = field(default_factory=list)
     rc_not_utf8: list[Path] = field(default_factory=list)
+    rc_backups: list[Path] = field(default_factory=list)
     codex_config: Path | None = None
     codex_backup: Path | None = None
     state_dir: Path | None = None
@@ -91,6 +93,8 @@ class Inventory:
                 parts.append("completion")
             if self.codex_config:
                 parts.append("Codex provider and profile")
+            if self.agent_backup or self.rc_backups:
+                parts.append("the backup copies we made")
             return ", ".join(parts) or "nothing"
         if key == "state":
             parts = []
@@ -157,6 +161,11 @@ def inventory(
             if model:
                 inv.agent_config, inv.tiny_model = candidate, model
                 inv.agent_editable = is_strict_json(text)
+            # Ours by its name alone, whether or not a tiny agent is still in the file.
+            # A config commonly holds the person's own API keys, so a copy of it left
+            # beside the original is a second copy of their secrets.
+            if backup_path(candidate).is_file():
+                inv.agent_backup = backup_path(candidate)
             break
 
     cx = codex_paths(home=home, env=env)
@@ -173,6 +182,9 @@ def inventory(
         if completion.is_file():
             inv.completion_files.append(completion)
         rc = rc_file(shell, home)
+        copy = backup_path(rc)
+        if copy.is_file() and copy not in inv.rc_backups:
+            inv.rc_backups.append(copy)
         if rc.is_file():
             try:
                 content = rc.read_text(encoding="utf-8")
@@ -305,6 +317,10 @@ def remove_integrations(
             lines.extend(harness.remove(context))
         except Exception as error:  # a failed removal never aborts the run
             lines.append(f"could not remove the {harness.title} integration: {error}")
+    # Ours by name: the ones found a moment ago, and the ones the rewrites below make.
+    backups: set[Path] = {*inv.rc_backups}
+    if inv.agent_backup:
+        backups.add(inv.agent_backup)
     rc_files = {*inv.rc_with_block, *inv.rc_with_bash_source}
     if restore_retired:
         rc_files.update(inv.rc_with_retired)
@@ -334,6 +350,7 @@ def remove_integrations(
             except OSError as error:  # a failed removal never aborts the run
                 lines.append(f"could not update {rc}: {error}")
                 continue
+            backups.add(backup_path(rc))  # the copy that rewrite just made
             what = []
             if rc in inv.rc_with_block:
                 what.append("aliases removed")
@@ -349,6 +366,17 @@ def remove_integrations(
                 lines.append(f"deleted {completion}")
             except OSError as error:
                 lines.append(f"could not delete {completion}: {error}")
+    # Last, because the rewrites above are what make most of them. A .local-llm.bak is
+    # a file this tool wrote and nothing else ever will, so an uninstall that leaves one
+    # behind leaves a second copy of a configuration - opencode's holds API keys.
+    for copy in sorted(backups):
+        if not (copy.exists() or copy.is_symlink()):
+            continue
+        try:
+            copy.unlink()
+            lines.append(f"deleted {copy}")
+        except OSError as error:  # a failed removal never aborts the run
+            lines.append(f"could not delete {copy}: {error}")
     return lines
 
 

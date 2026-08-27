@@ -58,6 +58,25 @@ def test_a_shell_file_that_is_not_utf8_is_named_and_the_rest_still_goes(harness)
     assert not paths.preset.exists(), "everything else was still removed"
 
 
+def test_the_backups_we_own_are_in_the_plan_and_go_with_the_rest(harness):
+    h = harness
+    populate(h.tmp)
+    agent_backup = h.tmp / ".config" / "opencode" / "opencode.json.local-llm.bak"
+    agent_backup.write_text('{"provider": {"anthropic": {"options": {"apiKey": "sk-mine"}}}}')
+    rc_backup = h.tmp / ".zshrc.local-llm.bak"
+    rc_backup.write_text("an older .zshrc")
+
+    plan = h.run("uninstall", "--dry-run")
+    assert plan.exit_code == 0, plan.output
+    assert str(agent_backup) in plan.output and str(rc_backup) in plan.output
+
+    result = h.run("uninstall", "--integrations", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert not agent_backup.exists() and not rc_backup.exists()
+    assert not (h.tmp / ".zshrc.local-llm.bak").exists(), "the copy this run made stayed"
+
+
 def test_models_only_stops_a_running_router_first(harness):
     h = harness
     paths = populate(h.tmp)
@@ -112,17 +131,19 @@ def test_uninstall_leaves_a_half_marked_rc_file_alone_and_says_so(harness):
     assert not (h.tmp / ".zshrc.local-llm.bak").exists(), "nothing was rewritten to back up"
 
 
-def test_uninstall_copies_an_rc_file_aside_before_rewriting_it(harness):
+def test_uninstall_copies_an_rc_file_aside_and_takes_the_copy_with_it(harness):
+    """The copy is what makes the rewrite survivable; a copy left behind is a file left behind."""
     h = harness
     populate(h.tmp)
     rc = h.tmp / ".zshrc"
-    original = rc.read_text()
+    copy = h.tmp / ".zshrc.local-llm.bak"
 
     result = h.run("uninstall", "--integrations", "--yes")
 
     assert result.exit_code == 0, result.output
-    assert "# >>> local-llm >>>" not in rc.read_text()
-    assert (h.tmp / ".zshrc.local-llm.bak").read_text() == original
+    assert "# >>> local-llm >>>" not in rc.read_text() and "export A=1" in rc.read_text()
+    assert f"deleted {copy}" in result.output, "the rewrite went through a copy"
+    assert not copy.exists()
 
 
 def test_zero_and_out_of_range_numbers_are_refused(harness):

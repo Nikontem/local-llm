@@ -1445,6 +1445,7 @@ def _print_plan(inv, chosen: set[str], sections: list[str]) -> None:
         elif key == "integrations":
             candidates = [inv.plugin, inv.agent_config, inv.codex_config, inv.codex_backup]
             candidates += [*inv.completion_files, *inv.rc_with_block, *inv.rc_with_bash_source]
+            candidates += [inv.agent_backup, *inv.rc_backups]
             for path in candidates:
                 if path:
                     out.print(f"    {path}")

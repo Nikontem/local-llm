@@ -293,6 +293,28 @@ def test_a_utf8_shell_file_keeps_its_bytes_through_an_uninstall(tmp_path):
     assert zshrc.read_bytes().startswith("export CAFE=caf\u00e9\n".encode())
 
 
+def test_the_backup_copies_we_own_are_listed_and_removed(tmp_path):
+    """A rewrite leaves one beside every file it touches, and nothing else deletes them."""
+    paths = populate(tmp_path)
+    rc_backup = tmp_path / ".zshrc.local-llm.bak"
+    rc_backup.write_text("an older .zshrc")
+    agent_backup = tmp_path / ".config" / "opencode" / "opencode.json.local-llm.bak"
+    agent_backup.write_text('{"provider": {"anthropic": {"options": {"apiKey": "sk-mine"}}}}')
+
+    inv = inventory(paths, home=tmp_path, env={})
+
+    assert inv.agent_backup == agent_backup and inv.rc_backups == [rc_backup]
+    assert "backup" in inv.summary("integrations")
+
+    lines = remove_integrations(inv, ctx_for(tmp_path))
+
+    assert not agent_backup.exists(), "a second copy of a file that holds API keys"
+    assert not rc_backup.exists()
+    assert any(str(agent_backup) in line for line in lines)
+    assert not (tmp_path / ".bashrc.local-llm.bak").exists(), "the copy this run made stayed"
+    assert inventory(paths, home=tmp_path, env={}).rc_backups == []
+
+
 def test_retired_line_alone_counts_as_nothing_left(tmp_path):
     paths = Paths.from_env(env={}, home=tmp_path)
     (tmp_path / ".zshrc").write_text(f"{RETIRED_PREFIX}source x\n")
