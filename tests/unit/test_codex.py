@@ -1,3 +1,7 @@
+import os
+
+import pytest
+
 from local_llm.integrations import HarnessContext, codex
 from local_llm.preset import Preset
 from local_llm.settings import Settings
@@ -166,3 +170,58 @@ def test_configure_refuses_an_unparsable_file(tmp_path):
     assert paths.config_file.read_text() == "[oops\n"
     assert any("not rewritten" in line for line in lines)
     assert any("[model_providers.local-llm]" in line for line in lines)
+
+
+def test_a_failed_write_leaves_no_temporary_file_behind(tmp_path, monkeypatch):
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True)
+    paths.config_file.write_text(EXISTING)
+
+    def refuse(source, destination):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(codex.os, "replace", refuse)
+    with pytest.raises(OSError):
+        codex.write(paths, codex.provider_table(Settings()), None)
+    assert not list(paths.config_dir.glob(".config.toml.*"))
+    assert paths.config_file.read_text() == EXISTING
+
+
+def test_binary_and_unreadable_files_are_reported_not_raised(tmp_path):
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True)
+    provider = codex.provider_table(Settings())
+    profile = codex.profile_table("small")
+
+    paths.config_file.write_bytes(b"\xff\xfe binary junk")
+    assert codex.status(paths, provider, profile) == "unreadable"
+    assert codex.parse_problem(paths) is not None
+    assert codex.has_tables(paths) is False
+    assert codex.configured_base_url(paths) is None
+    assert codex.current_render(paths) == ""
+    assert any("not rewritten" in line for line in codex.removal_lines(paths))
+
+    paths.config_file.write_text(EXISTING)
+    paths.config_file.chmod(0o000)
+    try:
+        if os.access(paths.config_file, os.R_OK):  # pragma: no cover - running as root
+            pytest.skip("this user can read a chmod 000 file")
+        assert codex.status(paths, provider, profile) == "unreadable"
+        assert codex.parse_problem(paths) is not None
+        assert codex.has_tables(paths) is False
+    finally:
+        paths.config_file.chmod(0o600)
+
+
+def test_configure_reports_a_write_that_fails(tmp_path, monkeypatch):
+    ctx = make_ctx(tmp_path)
+
+    def refuse(source, destination):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(codex.os, "replace", refuse)
+    lines = codex.configure(ctx)
+    assert lines == [
+        f"could not update {codex.codex_paths(home=tmp_path, env={}).config_file}:"
+        " [Errno 30] Read-only file system"
+    ]

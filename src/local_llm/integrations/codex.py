@@ -84,8 +84,13 @@ def _unwrap(value: object) -> dict | None:
     return unwrap() if unwrap is not None else dict(value)  # type: ignore[arg-type]
 
 
+#: Everything that stops us reading config.toml: bad TOML (ParseError), bytes that are
+#: not UTF-8 (UnicodeDecodeError), or a file we are not allowed to open (OSError).
+UNREADABLE = (ParseError, OSError, UnicodeDecodeError)
+
+
 def _document(paths: CodexPaths):
-    """The parsed file, or None when it does not exist. Raises ParseError."""
+    """The parsed file, or None when it does not exist. Raises anything in UNREADABLE."""
     if not paths.config_file.is_file():
         return None
     return tomlkit.parse(paths.config_file.read_text())
@@ -97,18 +102,20 @@ def _ours(doc, parent_name: str) -> dict | None:
 
 
 def parse_problem(paths: CodexPaths) -> str | None:
-    """None when the file parses (or is absent), else where it goes wrong."""
+    """None when the file can be read (or is absent), else why it cannot be."""
     try:
         _document(paths)
     except ParseError as error:
         return f"line {error.line}, column {error.col}: {error}"
+    except (OSError, UnicodeDecodeError) as error:
+        return f"cannot be read: {error}"
     return None
 
 
 def status(paths: CodexPaths, provider: dict, profile: dict | None) -> str:
     try:
         doc = _document(paths)
-    except ParseError:
+    except UNREADABLE:
         return "unreadable"
     if doc is None or _ours(doc, "model_providers") is None:
         return "missing"
@@ -120,7 +127,7 @@ def status(paths: CodexPaths, provider: dict, profile: dict | None) -> str:
 def has_tables(paths: CodexPaths) -> bool:
     try:
         doc = _document(paths)
-    except ParseError:
+    except UNREADABLE:
         return False
     return doc is not None and any(_ours(doc, name) is not None for name in PARENTS)
 
@@ -128,7 +135,7 @@ def has_tables(paths: CodexPaths) -> bool:
 def configured_base_url(paths: CodexPaths) -> str | None:
     try:
         doc = _document(paths)
-    except ParseError:
+    except UNREADABLE:
         return None
     ours = None if doc is None else _ours(doc, "model_providers")
     return None if ours is None else ours.get("base_url")
@@ -157,7 +164,7 @@ def render(provider: dict, profile: dict | None) -> str:
 def current_render(paths: CodexPaths) -> str:
     try:
         doc = _document(paths)
-    except ParseError:
+    except UNREADABLE:
         return ""
     provider = None if doc is None else _ours(doc, "model_providers")
     if provider is None:
@@ -170,9 +177,14 @@ def _atomic_write(paths: CodexPaths, text: str) -> None:
     if paths.config_file.is_file():
         shutil.copy2(paths.config_file, paths.backup)
     handle, temporary = tempfile.mkstemp(dir=paths.config_dir, prefix=".config.toml.")
-    with os.fdopen(handle, "w") as stream:
-        stream.write(text)
-    os.replace(temporary, paths.config_file)
+    try:
+        with os.fdopen(handle, "w") as stream:
+            stream.write(text)
+        os.replace(temporary, paths.config_file)
+    finally:
+        # A failed write must not litter ~/.codex with hidden half-files.
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def write(paths: CodexPaths, provider: dict, profile: dict | None) -> None:
@@ -241,7 +253,11 @@ def configure(ctx: HarnessContext) -> list[str]:
             )
             if not ctx.ask(f"Replace the local-llm tables in {paths.config_file}?", True):
                 return ["left as it is"]
-        write(paths, provider, profile)
+        try:
+            write(paths, provider, profile)
+        except UNREADABLE as error:
+            # A read-only home, a full disk or somebody else's file: say so, never raise.
+            return [f"could not update {paths.config_file}: {error}"]
         lines.append(f"provider and profile local-llm written to {paths.config_file}")
 
     if profile is None:
