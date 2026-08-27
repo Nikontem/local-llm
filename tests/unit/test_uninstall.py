@@ -140,7 +140,9 @@ def test_delete_model_file_removes_symlink_and_blob(tmp_path):
 def test_remove_integrations_with_and_without_restore(tmp_path):
     paths = populate(tmp_path)
     inv = inventory(paths, home=tmp_path, env={})
-    lines = remove_integrations(inv, ctx_for(tmp_path), restore_retired=True)
+    lines = remove_integrations(
+        inv, ctx_for(tmp_path), restore_retired=True, delete_backups=True
+    )
     assert not (tmp_path / ".config" / "opencode" / "plugins" / "local-llm-models.js").exists()
     config = json.loads((tmp_path / ".config" / "opencode" / "opencode.json").read_text())
     assert "tiny" not in config["agent"] and config["agent"]["other"] == {"mode": "primary"}
@@ -153,7 +155,9 @@ def test_remove_integrations_with_and_without_restore(tmp_path):
     assert not (tmp_path / ".zfunc" / "_local-llm").exists()
     assert not (tmp_path / ".bash_completions" / "local-llm.sh").exists()
     assert any("restored" in line for line in lines)
-    again = remove_integrations(inventory(paths, home=tmp_path, env={}), ctx_for(tmp_path))
+    again = remove_integrations(
+        inventory(paths, home=tmp_path, env={}), ctx_for(tmp_path), delete_backups=True
+    )
     assert again == []
 
 
@@ -293,8 +297,9 @@ def test_a_utf8_shell_file_keeps_its_bytes_through_an_uninstall(tmp_path):
     assert zshrc.read_bytes().startswith("export CAFE=caf\u00e9\n".encode())
 
 
-def test_the_backup_copies_we_own_are_listed_and_removed(tmp_path):
-    """A rewrite leaves one beside every file it touches, and nothing else deletes them."""
+def test_the_backup_copies_we_own_are_kept_unless_asked_for(tmp_path):
+    """A rewrite leaves one beside every file it touches, and each is the only copy of
+    what that file said before. They go only when the caller says they go."""
     paths = populate(tmp_path)
     rc_backup = tmp_path / ".zshrc.local-llm.bak"
     rc_backup.write_text("an older .zshrc")
@@ -306,7 +311,16 @@ def test_the_backup_copies_we_own_are_listed_and_removed(tmp_path):
     assert inv.agent_backup == agent_backup and inv.rc_backups == [rc_backup]
     assert "backup" in inv.summary("integrations")
 
-    lines = remove_integrations(inv, ctx_for(tmp_path))
+    kept = remove_integrations(inv, ctx_for(tmp_path))
+
+    assert agent_backup.exists() and rc_backup.exists(), "taken away without being asked"
+    assert any("kept" in line for line in kept)
+    assert any(str(agent_backup) in line for line in kept), "kept, and not named"
+    assert any(str(tmp_path / ".bashrc.local-llm.bak") in line for line in kept)
+
+    lines = remove_integrations(
+        inventory(paths, home=tmp_path, env={}), ctx_for(tmp_path), delete_backups=True
+    )
 
     assert not agent_backup.exists(), "a second copy of a file that holds API keys"
     assert not rc_backup.exists()

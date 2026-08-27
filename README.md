@@ -445,10 +445,17 @@ and their files (cache symlink and blob) are deleted. `--models`,
 `--integrations`, `--state`, `--config` and `--all` select without the menu,
 `--yes` skips the questions, `--dry-run` only prints the plan.
 `--restore-shell-line` puts back a `source …/local_llm.zsh` line that
-`completion install` had commented out. The `integrations` category also takes
-away the `.local-llm.bak` copies this tool made before editing any of those
-files: nothing else ever writes a file by that name, and one left behind
-beside an opencode config is a second copy of whatever API keys are in it. The config directory is removed only
+`completion install` had commented out.
+
+Before editing any file of yours, this tool copies it aside as
+`<name>.local-llm.bak`. Nothing else ever writes a file by that name, so
+uninstall knows those copies are its own — but each one is the only record of
+what your file said beforehand, so it never deletes them without asking. The
+question comes after you confirm the rest; answer no and it prints where they
+are so you can delete them yourself later. `--delete-backups` and
+`--keep-backups` answer it in advance, and a run with `--yes` keeps them.
+Worth clearing out once you are sure: the copy beside an opencode config holds
+whatever API keys were in it. The config directory is removed only
 if nothing else is left in it. The tool cannot delete itself while running,
 so the last line prints the command for that (`uv tool uninstall local-llm`
 for the standard install).

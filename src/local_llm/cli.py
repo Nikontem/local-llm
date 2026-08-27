@@ -1508,6 +1508,24 @@ def setup(
 # ---------------------------------------------------------------- uninstall
 
 
+def _delete_backups(chosen: bool | None, *, yes: bool) -> bool:
+    """Whether the .local-llm.bak copies go too, which is never assumed.
+
+    Each one holds what a file of the person's own said before this tool changed it,
+    so it is the one thing an uninstall does not take away on its own reading. Said
+    either way on the command line, the flag decides; otherwise the question is put,
+    and an unattended run keeps them.
+    """
+    if chosen is not None:
+        return chosen
+    if yes:
+        return False
+    return typer.confirm(
+        "Also delete the backup copies local-llm made of your own config files?",
+        default=False,
+    )
+
+
 def _print_plan(inv, chosen: set[str], sections: list[str]) -> None:
     for key in KEYS:
         if key not in chosen:
@@ -1521,12 +1539,14 @@ def _print_plan(inv, chosen: set[str], sections: list[str]) -> None:
                 for file in entry.files:
                     out.print(f"    {file}")
         elif key == "integrations":
-            candidates = [inv.plugin, inv.agent_config, inv.codex_config, inv.codex_backup]
+            candidates = [inv.plugin, inv.agent_config, inv.codex_config]
             candidates += [*inv.completion_files, *inv.rc_with_block, *inv.rc_with_bash_source]
-            candidates += [inv.agent_backup, *inv.rc_backups]
+            copies = [p for p in [inv.agent_backup, inv.codex_backup, *inv.rc_backups] if p]
             for path in candidates:
-                if path:
+                if path and path not in copies:
                     out.print(f"    {path}")
+            for path in copies:
+                out.print(f"    {path}: a copy of that file as it was; you will be asked")
             for rc in inv.rc_with_retired:
                 out.print(f"    {rc}: a retired zsh line (put back only with --restore-shell-line)")
             for rc in inv.rc_not_utf8:
@@ -1569,7 +1589,7 @@ def uninstall(
         "--integrations",
         help=(
             "opencode plugin and agent, the Codex provider and profile, shell aliases"
-            " and completion, and the backup copies this tool made of any of those files."
+            " and completion. The backup copies this tool made are asked about separately."
         ),
     ),
     state_: bool = typer.Option(False, "--state", help="pid, logs, Hub cache, settings.toml."),
@@ -1577,6 +1597,14 @@ def uninstall(
     all_: bool = typer.Option(False, "--all", help="Everything above."),
     restore_shell_line: bool = typer.Option(
         False, "--restore-shell-line", help="Put back the retired `source local_llm.zsh` line."
+    ),
+    delete_backups: bool | None = typer.Option(
+        None,
+        "--delete-backups/--keep-backups",
+        help=(
+            "Delete the .local-llm.bak copies of your own files, or keep them."
+            " Asked otherwise; kept by default, including under --yes."
+        ),
     ),
     yes: bool = typer.Option(False, "-y", "--yes", help="Do not ask."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Only print what would be removed."),
@@ -1640,7 +1668,12 @@ def uninstall(
             out.print(f"  {line}")
     if "integrations" in chosen:
         context = _harness_context(st, yes=True)  # removal asks nothing
-        for line in remove_integrations(inv, context, restore_retired=restore_shell_line):
+        for line in remove_integrations(
+            inv,
+            context,
+            restore_retired=restore_shell_line,
+            delete_backups=_delete_backups(delete_backups, yes=yes),
+        ):
             out.print(f"  {line}")
     if "state" in chosen:
         for line in remove_state(inv):

@@ -344,12 +344,21 @@ def _restore_retired(text: str) -> str:
 
 
 def remove_integrations(
-    inv: Inventory, context: HarnessContext, *, restore_retired: bool = False
+    inv: Inventory,
+    context: HarnessContext,
+    *,
+    restore_retired: bool = False,
+    delete_backups: bool = False,
 ) -> list[str]:
     """Undo the integrations in the inventory, plus whatever the registry's providers wrote.
 
     The context is what each registry entry needs to find its own files, and is
     required rather than defaulted so nothing can quietly read the real home.
+
+    A .local-llm.bak is a file this tool wrote, but it is also the only copy of what
+    somebody's configuration said before this tool changed it, so whether it goes is
+    the caller's question to have asked. Kept, every one of them is named: a leftover
+    nobody was told about is the hazard, not a leftover.
     """
     lines: list[str] = []
     if inv.plugin and inv.plugin.exists():
@@ -436,12 +445,21 @@ def remove_integrations(
                 lines.append(f"deleted {completion}")
             except OSError as error:
                 lines.append(f"could not delete {completion}: {error}")
-    # Last, because the rewrites above are what make most of them. A .local-llm.bak is
-    # a file this tool wrote and nothing else ever will, so an uninstall that leaves one
-    # behind leaves a second copy of a configuration - opencode's holds API keys.
-    for copy in sorted(backups):
-        if not (copy.exists() or copy.is_symlink()):
-            continue
+    # Last, because the rewrites above are what make most of them.
+    ours = [copy for copy in sorted(backups) if copy.exists() or copy.is_symlink()]
+    if not ours:
+        return lines
+    if not delete_backups:
+        lines.append(
+            "kept one backup copy, holding what that file said before local-llm changed"
+            " it. Delete it by hand once you are sure you do not want it:"
+            if len(ours) == 1
+            else f"kept {len(ours)} backup copies, each holding what one of your files said"
+            " before local-llm changed it. Delete them by hand once you are sure:"
+        )
+        lines.extend(f"  {copy}" for copy in ours)
+        return lines
+    for copy in ours:
         try:
             copy.unlink()
             lines.append(f"deleted {copy}")

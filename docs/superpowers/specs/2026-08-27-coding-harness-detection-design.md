@@ -376,6 +376,15 @@ dotfiles repository, where deleting the link would break an arrangement the
 person made on purpose; there the emptied file is written through the link as
 usual.
 
+Before changing any file of the person's, this tool copies it aside as
+`<name>.local-llm.bak`, a name nothing else on the machine ever writes. That
+makes those copies ours to remove — but each is the only record of what their
+file said beforehand, so uninstall never removes one on its own reading. It
+asks, after the confirmation for everything else, and keeps them when the
+answer is no or when nobody is there to answer, naming each one so a leftover
+is never a silent one. `--delete-backups` and `--keep-backups` answer without
+the question being put.
+
 The opencode side follows the same rule for the part it owns. Uninstall
 removes the `tiny` helper agent only when it is ours by the test in section 4,
 writes the change atomically with a backup like every other write into a
