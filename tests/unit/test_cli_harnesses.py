@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from local_llm import cli
+from local_llm.shellrc import MARK_BEGIN
 
 
 def capture_exec(monkeypatch):
@@ -211,3 +212,32 @@ def test_yes_before_the_subcommand_name_still_counts(harness):
     assert h.run("integrate", "codex", "--yes").exit_code == 0
     assert h.run("integrate", "codex").exit_code == 0
     assert seen == [True, True, False]
+
+
+def test_completion_is_installed_after_the_rc_file_is_judged(tmp_path, monkeypatch):
+    """typer's installer appends its own lines to the same rc file, so doing it first
+    made the refusal say a file was left exactly as it is moments after it grew."""
+    from local_llm import cli
+
+    rc = tmp_path / ".zshrc"
+    rc.write_text(f"export A=1\n{MARK_BEGIN}\nalias half='x'\n")
+    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: tmp_path))
+
+    order: list[str] = []
+
+    def fake_install(shell):
+        order.append("completion")
+        rc.write_text(rc.read_text() + "fpath+=~/.zfunc\nautoload -Uz compinit; compinit\n")
+        return tmp_path / ".zfunc" / "_local-llm"
+
+    monkeypatch.setattr(cli, "install_completion", fake_install)
+    monkeypatch.setattr(cli, "marker_warning", lambda path, problem: (
+        order.append("judged") or f"{path} {problem}, so it was left exactly as it is"
+    ))
+
+    lines = cli._integrate_shell("zsh", aliases=True, yes=True)
+
+    assert order == ["judged", "completion"], "the file was judged after it was changed"
+    assert any("left exactly as it is" in line for line in lines)
+    assert any("completion written to" in line for line in lines)
+    assert "alias half='x'" in rc.read_text(), "the half block was repaired anyway"

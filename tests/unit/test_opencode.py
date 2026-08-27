@@ -312,3 +312,47 @@ def test_a_write_that_fails_is_reported_not_raised(tmp_path, monkeypatch):
     lines = opencode.configure(ctx)
     assert any("could not write" in line for line in lines)
     assert any("could not update" in line for line in lines)
+
+
+def test_a_remote_router_is_warned_about_wherever_the_write_happens(tmp_path):
+    """The menu warned; `local-llm integrate opencode` run on its own said nothing."""
+    from local_llm.integrations import opencode
+    from local_llm.settings import Settings
+
+    ctx = make_ctx(tmp_path)
+    ctx.settings = Settings(host="192.168.1.40")
+
+    lines = opencode.configure(ctx)
+
+    note = [line for line in lines if "192.168.1.40" in line and "loopback" in line]
+    assert note, lines
+    assert "http" in note[0] and "unencrypted" in note[0]
+
+    assert not any("loopback" in line for line in opencode.configure(make_ctx(tmp_path)))
+
+
+def test_the_plugin_is_read_once_so_the_diff_cannot_race_the_check(tmp_path, monkeypatch):
+    """The second read was unguarded: between the two the file can change or stop
+    being readable, which is the gap the Codex path closes by re-parsing inside its write."""
+    from pathlib import Path
+
+    from local_llm.integrations import opencode
+
+    ctx = make_ctx(tmp_path, yes=True)
+    plugin = tmp_path / ".config" / "opencode" / "plugins" / "local-llm-models.js"
+    plugin.parent.mkdir(parents=True, exist_ok=True)
+    plugin.write_text("// somebody else's plugin\n")
+
+    reads: list[str] = []
+    original = Path.read_text
+
+    def counted(self, *args, **kwargs):
+        if self == plugin:
+            reads.append(str(self))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counted)
+    lines = opencode.configure(ctx)
+
+    assert reads == [str(plugin)], "the plugin was read twice"
+    assert any("plugin installed" in line for line in lines)

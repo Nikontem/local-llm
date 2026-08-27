@@ -343,3 +343,63 @@ def test_an_accented_comment_does_not_make_a_config_unparsable(tmp_path):
     codex.write(paths, codex.provider_table(Settings()), None)
     text = paths.config_file.read_text(encoding="utf-8")
     assert "# réglages Codex — à garder" in text and "[model_providers.local-llm]" in text
+
+
+def test_a_remote_router_is_warned_about_wherever_the_write_happens(tmp_path):
+    """The menu warned; `local-llm integrate codex` run on its own said nothing at all."""
+    from local_llm.integrations import codex
+
+    ctx = make_ctx(tmp_path)
+    ctx.settings = Settings(host="192.168.1.40")
+
+    lines = codex.configure(ctx)
+
+    note = [line for line in lines if "192.168.1.40" in line and "loopback" in line]
+    assert note, lines
+    assert "http" in note[0] and "unencrypted" in note[0]
+
+    local = make_ctx(tmp_path)
+    assert not any("loopback" in line for line in codex.configure(local))
+
+
+def test_a_config_that_held_only_our_tables_is_removed_not_emptied(tmp_path):
+    """The file did not exist before this tool wrote it, so an uninstall that leaves a
+    zero-byte one behind has not finished putting the machine back."""
+    from local_llm.integrations import codex
+
+    ctx = make_ctx(tmp_path)
+    codex.configure(ctx)
+    paths = codex.codex_paths(home=tmp_path, env={})
+    assert paths.config_file.is_file()
+
+    lines = codex.removal_lines(paths)
+
+    assert not paths.config_file.exists(), paths.config_file.read_text()
+    assert any("removed" in line and str(paths.config_file) in line for line in lines)
+    assert not paths.backup.exists()
+
+
+def test_a_config_with_anything_else_in_it_stays(tmp_path):
+    from local_llm.integrations import codex
+
+    ctx = make_ctx(tmp_path)
+    codex.configure(ctx)
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_file.write_text('model = "gpt-5"\n' + paths.config_file.read_text())
+
+    codex.removal_lines(paths)
+
+    assert paths.config_file.read_text().strip() == 'model = "gpt-5"'
+
+
+def test_a_config_left_holding_only_a_comment_stays(tmp_path):
+    from local_llm.integrations import codex
+
+    ctx = make_ctx(tmp_path)
+    codex.configure(ctx)
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_file.write_text("# my own notes\n" + paths.config_file.read_text())
+
+    codex.removal_lines(paths)
+
+    assert paths.config_file.is_file() and "# my own notes" in paths.config_file.read_text()

@@ -178,9 +178,10 @@ def note_lines(
         return []
     return [
         "",
-        f"  Note: {settings.host} is not a loopback address, so configuring an agent"
-        " writes that address into its config file, where anything reading that file"
-        " can see it.",
+        f"  Note: {settings.host} is not a loopback address, and the base URL is"
+        " plain http. Configuring an agent writes that address into its config file,"
+        " where anything reading that file can see it, and the agent's prompts and the"
+        " code it sends will cross your network unencrypted.",
     ]
 
 
@@ -249,6 +250,31 @@ def render(
     return lines
 
 
+def parse_numbers(answer: str, upper: int, also: str = "") -> list[int]:
+    """'1 3' as [1, 3], refusing anything that is not a whole number in 1..upper.
+
+    Every menu in the tool parses its answer through this one function, so a bad
+    answer is refused the same way wherever it is typed. `also` names the other
+    answers the asking menu accepts - one offers "a for all", another "q to quit" -
+    because that part of the message is the only part that differs between them.
+    Repeats are dropped, so "1 1" picks one thing.
+    """
+    problem = f"Pick numbers between 1 and {upper}{also}"
+    tokens = answer.split()
+    if not tokens:
+        raise ValueError(problem)
+    picked: list[int] = []
+    for token in tokens:
+        if not token.isdigit():
+            raise ValueError(problem)
+        number = int(token)
+        if number < 1 or number > upper:
+            raise ValueError(problem)
+        if number not in picked:
+            picked.append(number)
+    return picked
+
+
 def parse_choice(answer: str, rows: Sequence[Harness]) -> list[Harness]:
     """'1 3' picks two, 'a' picks all, 'n' or empty picks none. Anything else raises."""
     answer = answer.strip().lower()
@@ -256,13 +282,5 @@ def parse_choice(answer: str, rows: Sequence[Harness]) -> list[Harness]:
         return []
     if answer in ("a", "all"):
         return list(rows)
-    picked: list[Harness] = []
-    for token in answer.split():
-        if not token.isdigit():
-            raise ValueError(f"Pick numbers between 1 and {len(rows)}, a for all, n for none")
-        number = int(token)
-        if number < 1 or number > len(rows):
-            raise ValueError(f"Pick numbers between 1 and {len(rows)}, a for all, n for none")
-        if rows[number - 1] not in picked:
-            picked.append(rows[number - 1])
-    return picked
+    numbers = parse_numbers(answer, len(rows), ", a for all, n for none")
+    return [rows[number - 1] for number in numbers]

@@ -167,3 +167,35 @@ def test_the_warning_names_the_file_and_says_what_to_do():
     warning = marker_warning(Path("/home/me/.zshrc"), problem)
     assert warning.startswith("/home/me/.zshrc has a ")
     assert "by hand" in warning and "left exactly as it is" in warning
+
+
+def test_two_whole_blocks_are_both_taken_out(tmp_path):
+    """An older version, or a paste, could leave a second one; the first-only removal
+    took the aliases out of one and reported the file clean."""
+    text = (
+        "export A=1\n"
+        + block_text(["alias one='x'"])
+        + "export B=2\n"
+        + block_text(["alias two='y'"])
+        + "export C=3\n"
+    )
+
+    assert remove_block(text) == "export A=1\nexport B=2\nexport C=3\n"
+
+
+def test_two_whole_blocks_converge_to_one_and_keep_every_alias(tmp_path):
+    text = (
+        "export A=1\n"
+        + block_text(["alias one='x'"])
+        + "export B=2\n"
+        + block_text(["alias two='y'"])
+    )
+
+    assert block_lines(text) == ["alias one='x'", "alias two='y'"]
+
+    merged = merge_alias_lines(block_lines(text), ["alias three='z'"])
+    updated = upsert_block(text, merged)
+
+    assert updated.count(MARK_BEGIN) == 1 and updated.count(MARK_END) == 1
+    assert block_lines(updated) == ["alias one='x'", "alias two='y'", "alias three='z'"]
+    assert "export A=1" in updated and "export B=2" in updated

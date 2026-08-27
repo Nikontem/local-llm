@@ -1161,29 +1161,42 @@ def _integrate_opencode(st: State, *, agent: bool, yes: bool) -> list[str]:
 
 
 def _integrate_shell(
-    st: State,
     shell: str,
     *,
     aliases: bool,
     yes: bool,
     extra_aliases: Sequence[tuple[str, str]] = (),
 ) -> list[str]:
-    lines: list[str] = []
+    rc = rc_file(shell, Path.home())
+    lines = _alias_block(rc, shell, aliases=aliases, yes=yes, extra_aliases=extra_aliases)
+    # Last, and not first: typer's installer appends its own two lines to this same rc
+    # file, so running it before the block work above made a refusal there report that
+    # the file was left exactly as it is moments after it had grown.
     completion_path = install_completion(shell)
     lines.append(f"{shell} completion written to {completion_path}")
-    rc = rc_file(shell, Path.home())
+    lines.append(f"open a new shell, or run:  source {rc}")
+    return lines
+
+
+def _alias_block(
+    rc: Path,
+    shell: str,
+    *,
+    aliases: bool,
+    yes: bool,
+    extra_aliases: Sequence[tuple[str, str]] = (),
+) -> list[str]:
+    """Put our marked block in the rc file, take it out, or say why neither happened."""
+    lines: list[str] = []
     try:
         text = rc.read_text(encoding="utf-8") if rc.is_file() else ""
     except UnicodeDecodeError:
-        lines.append(encoding_warning(rc))
-        return lines
+        return [encoding_warning(rc)]
     problem = marker_problem(text)
     if problem is not None:
         # Half a marked block means an edit of somebody's went wrong. Adding a second
         # block below the stray marker is exactly what later empties the whole file.
-        lines.append(marker_warning(rc, problem))
-        lines.append(f"open a new shell, or run:  source {rc}")
-        return lines
+        return [marker_warning(rc, problem)]
     updated, retired = retire_old_source(text)
     if aliases:
         wanted = alias_lines(shell, [TOOL_ALIAS, *extra_aliases])
@@ -1207,7 +1220,6 @@ def _integrate_shell(
                 lines.append(f"aliases {names} added to {rc}")
             else:
                 lines.append(f"aliases removed from {rc}")
-    lines.append(f"open a new shell, or run:  source {rc}")
     return lines
 
 
@@ -1291,7 +1303,7 @@ def integrate_menu(ctx: typer.Context, yes: bool = typer.Option(
     extra = [h.alias for h in chosen if h.alias]
     if extra and (yes or _interactive()):
         shell = detect_shell()
-        for line in _integrate_shell(st, shell, aliases=True, yes=yes, extra_aliases=extra):
+        for line in _integrate_shell(shell, aliases=True, yes=yes, extra_aliases=extra):
             out.print(f"  {line}")
 
 
@@ -1347,7 +1359,7 @@ def completion_install_cmd(
     chosen = shell or detect_shell()
     if chosen not in ("zsh", "bash", "fish"):
         fail(f"--shell must be zsh, bash or fish, got {chosen!r}")
-    for line in _integrate_shell(state(), chosen, aliases=aliases, yes=yes):
+    for line in _integrate_shell(chosen, aliases=aliases, yes=yes):
         out.print(line)
 
 
@@ -1413,7 +1425,7 @@ def setup(
         ),
         pull=do_pull,
         integrate_shell=lambda shell, extra=(): _integrate_shell(
-            st, shell, aliases=True, yes=True, extra_aliases=extra
+            shell, aliases=True, yes=True, extra_aliases=extra
         ),
         harness_status=lambda harness: (
             harness.status(_harness_context(st, yes=yes, io=io)) if harness.status else "missing"
@@ -1462,15 +1474,12 @@ def _print_plan(inv, chosen: set[str], sections: list[str]) -> None:
                 out.print(f"    {path}")
 
 
-def _numbers(answer: str, upper: int) -> list[int]:
-    """Parse '1 3' into [1, 3], refusing anything outside 1..upper."""
+def _numbers(answer: str, upper: int, also: str = "") -> list[int]:
+    """The shared menu parser, with this command's way of refusing a bad answer."""
     try:
-        picked = [int(token) for token in answer.split()]
-    except ValueError:
-        fail(f"Pick numbers between 1 and {upper}")
-    if not picked or any(n < 1 or n > upper for n in picked):
-        fail(f"Pick numbers between 1 and {upper}")
-    return picked
+        return harnesses.parse_numbers(answer, upper, also)
+    except ValueError as error:
+        fail(str(error))
 
 
 def _pick_models(inv) -> list[str]:
@@ -1480,7 +1489,8 @@ def _pick_models(inv) -> list[str]:
     answer = typer.prompt("  Numbers to remove (e.g. 1 3), a for all", default="a").strip().lower()
     if answer in ("a", "all"):
         return [entry.section for entry in inv.models]
-    return [inv.models[n - 1].section for n in _numbers(answer, len(inv.models))]
+    numbers = _numbers(answer, len(inv.models), ", a for all")
+    return [inv.models[n - 1].section for n in numbers]
 
 
 @app.command()
@@ -1542,7 +1552,7 @@ def uninstall(
             if answer in ("5", "a", "all"):
                 chosen = set(KEYS)
             else:
-                chosen = {KEYS[n - 1] for n in _numbers(answer, 4)}
+                chosen = {KEYS[n - 1] for n in _numbers(answer, 4, ", 5 for everything")}
             if "models" in chosen and inv.models:
                 sections = _pick_models(inv)
     if inv.empty:

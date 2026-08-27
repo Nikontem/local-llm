@@ -140,3 +140,22 @@ def test_the_menu_row_says_an_installed_alias_is_installed(tmp_path):
     text = "\n".join(harnesses.render(installed, missing, lambda h: h.status(ctx)))
     assert "alias claude_local installed" in text
     assert "alias aider_local" in text and "alias aider_local installed" not in text
+
+
+def test_one_parser_answers_for_every_menu_in_the_tool():
+    """cli._numbers used to be a second copy, refusing the same bad answer differently."""
+    import pytest
+
+    from local_llm import cli
+    from local_llm.harnesses import parse_numbers
+
+    assert parse_numbers("1 3", 4) == [1, 3]
+    assert parse_numbers("2 2", 4) == [2], "a repeat picks the same thing once"
+    for bad in ("", "   ", "x", "0", "5", "-1", "1 x", "1.5"):
+        with pytest.raises(ValueError, match="Pick numbers between 1 and 4"):
+            parse_numbers(bad, 4)
+
+    assert cli._numbers("1 3", 4) == parse_numbers("1 3", 4)
+    assert "a for all" in str(
+        pytest.raises(ValueError, parse_numbers, "x", 4, ", a for all").value
+    )

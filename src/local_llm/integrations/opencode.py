@@ -12,7 +12,7 @@ from importlib import resources
 from pathlib import Path
 
 from ..preset import smallest_model
-from . import HarnessContext, atomic_write
+from . import HarnessContext, atomic_write, remote_note
 
 PLUGIN_NAME = "local-llm-models.js"
 CONFIG_CANDIDATES = ("opencode.jsonc", "opencode.json", "config.json")
@@ -47,19 +47,30 @@ def opencode_paths(home: Path | None = None, env: Mapping[str, str] | None = Non
 
 
 def plugin_source() -> str:
-    return resources.files("local_llm").joinpath("resources/opencode-plugin.js").read_text()
+    source = resources.files("local_llm").joinpath("resources/opencode-plugin.js")
+    return source.read_text(encoding="utf-8")
 
 
-def plugin_status(paths: OpencodePaths) -> str:
+def read_plugin(paths: OpencodePaths) -> tuple[str, str]:
+    """How the installed plugin stands, and the exact text that decided it.
+
+    The text comes back alongside the answer so that a caller wanting to show a diff
+    does not read the file a second time. Between two reads the file can change, or
+    stop being readable, and the second read had no guard around it at all.
+    """
     if not paths.plugin.is_file():
-        return "missing"
+        return "missing", ""
     try:
-        current = paths.plugin.read_text()
+        current = paths.plugin.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         # A plugin whose bytes are not valid UTF-8 is as unreadable as one we
         # are not allowed to open, and neither may reach the caller as an exception.
-        return "unreadable"
-    return "same" if current == plugin_source() else "different"
+        return "unreadable", ""
+    return ("same" if current == plugin_source() else "different"), current
+
+
+def plugin_status(paths: OpencodePaths) -> str:
+    return read_plugin(paths)[0]
 
 
 def install_plugin(paths: OpencodePaths) -> Path:
@@ -150,10 +161,18 @@ def foreign_tiny_model(text: str) -> str | None:
 
 
 def configure(ctx: HarnessContext, *, agent: bool = True) -> list[str]:
-    """Install the plugin, and by default the tiny helper agent."""
+    """Install the plugin, and by default the tiny helper agent.
+
+    The remote note is added here rather than at each way out, so no path this
+    function grows later can be the one that forgets it.
+    """
+    return _configure(ctx, agent=agent) + remote_note(ctx.settings)
+
+
+def _configure(ctx: HarnessContext, *, agent: bool = True) -> list[str]:
     paths = opencode_paths(home=ctx.home, env=ctx.env)
     lines: list[str] = []
-    state = plugin_status(paths)
+    state, installed = read_plugin(paths)
     if state == "same":
         lines.append(f"plugin already installed: {paths.plugin}")
     elif state == "unreadable":
@@ -164,7 +183,7 @@ def configure(ctx: HarnessContext, *, agent: bool = True) -> list[str]:
             ctx.say(
                 "\n".join(
                     difflib.unified_diff(
-                        paths.plugin.read_text().splitlines(),
+                        installed.splitlines(),
                         plugin_source().splitlines(),
                         fromfile=str(paths.plugin),
                         tofile="shipped plugin",

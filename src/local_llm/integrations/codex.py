@@ -13,7 +13,7 @@ from tomlkit.exceptions import ParseError
 
 from ..preset import smallest_model
 from ..settings import Settings
-from . import HarnessContext, atomic_write, backup_path
+from . import HarnessContext, atomic_write, backup_path, remote_note
 
 PROVIDER_ID = "local-llm"
 WIRE_API = "responses"  # Codex dropped the older "chat" wire format in February 2026
@@ -223,12 +223,30 @@ def drop(paths: CodexPaths) -> list[str]:
         del doc["profile"]
         removed.append(f'profile = "{PROVIDER_ID}"')
     if removed:
-        atomic_write(paths.config_file, tomlkit.dumps(doc))
+        rest = tomlkit.dumps(doc)
+        if rest.strip() or paths.config_file.is_symlink():
+            # Anything of theirs still in it - a setting, or a comment we left alone -
+            # and the file stays. So does a symlink, which is somebody's dotfiles
+            # arrangement: breaking the link would be a change they did not ask for.
+            atomic_write(paths.config_file, rest)
+        else:
+            # Our tables were the whole file, so the file is ours too: it did not exist
+            # before configure wrote it. A zero-byte config.toml left behind is not the
+            # machine put back the way it was found.
+            paths.config_file.unlink(missing_ok=True)
     return removed
 
 
 def configure(ctx: HarnessContext) -> list[str]:
-    """Write our provider and profile into Codex's config, asking before replacing."""
+    """Write our provider and profile into Codex's config, asking before replacing.
+
+    The remote note is added here rather than at each way out, so no path this
+    function grows later can be the one that forgets it.
+    """
+    return _configure(ctx) + remote_note(ctx.settings)
+
+
+def _configure(ctx: HarnessContext) -> list[str]:
     paths = codex_paths(home=ctx.home, env=ctx.env)
     provider = provider_table(ctx.settings)
     model = chosen_model(ctx)
@@ -309,6 +327,8 @@ def removal_lines(paths: CodexPaths) -> list[str]:
     if not removed:
         return []
     lines = [f"removed {', '.join(removed)} from {paths.config_file}"]
+    if not paths.config_file.exists():
+        lines.append(f"deleted {paths.config_file}: it held nothing but those tables")
     # drop() rewrote the file, so the backup beside it is the one we just made.
     # Nothing above this point deletes it, which is why a file left untouched -
     # unparsable, or holding nothing of ours - keeps whatever backup it had.

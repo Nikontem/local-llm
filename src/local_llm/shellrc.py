@@ -110,12 +110,23 @@ def encoding_warning(path: Path) -> str:
     )
 
 
-def _block_span(text: str) -> tuple[int, int] | None:
-    """Where our first whole block sits, or None: no block, or markers that do not pair up."""
+def _block_spans(text: str) -> list[tuple[int, int]]:
+    """Where each whole block of ours sits. Empty: no block, or markers that do not pair up.
+
+    More than one is unusual but real - an older version of this tool appended a
+    second, or somebody pasted the same block twice. Acting on the first alone left
+    the others behind while reporting the file clean, so every one is answered for.
+    """
     if marker_problem(text) is not None:
-        return None
+        return []
     found = _markers(text)
-    return None if not found else (found[0][1], found[1][2])
+    return [(begin[1], end[2]) for begin, end in zip(found[0::2], found[1::2], strict=True)]
+
+
+def _block_span(text: str) -> tuple[int, int] | None:
+    """Where our first whole block sits, or None when there is not one."""
+    spans = _block_spans(text)
+    return spans[0] if spans else None
 
 
 def has_block(text: str) -> bool:
@@ -132,15 +143,33 @@ def mentions_block(text: str) -> bool:
     return bool(_markers(text))
 
 
+def _without(text: str, spans: list[tuple[int, int]]) -> str:
+    """The text with those stretches cut out, taken from the back so the offsets hold."""
+    for begin, end in reversed(spans):
+        text = text[:begin] + text[end:]
+    return text
+
+
 def upsert_block(text: str, lines: list[str]) -> str:
-    """Replace our block, or add one at the bottom. Markers that do not pair up are
-    left alone: the text comes back exactly as it went in. See marker_problem."""
+    """Replace our block, or add one at the bottom, leaving exactly one behind.
+
+    Markers that do not pair up are left alone: the text comes back exactly as it
+    went in. See marker_problem.
+    """
     if marker_problem(text) is not None:
         return text
     block = block_text(lines)
-    span = _block_span(text)
-    if span:
-        return text[: span[0]] + block + text[span[1]:]
+    spans = _block_spans(text)
+    if spans:
+        # The first one keeps its place in the file; any others are dropped, so a file
+        # that somehow grew two of them comes back with one.
+        pieces = [text[: spans[0][0]], block]
+        previous = spans[0][1]
+        for begin, end in spans[1:]:
+            pieces.append(text[previous:begin])
+            previous = end
+        pieces.append(text[previous:])
+        return "".join(pieces)
     if not text:
         return block
     separator = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
@@ -148,19 +177,17 @@ def upsert_block(text: str, lines: list[str]) -> str:
 
 
 def remove_block(text: str) -> str:
-    """Take our block out. Markers that do not pair up are left alone, because the
-    end marker they would pair with belongs to somebody else's lines."""
-    span = _block_span(text)
-    return text if span is None else text[: span[0]] + text[span[1]:]
+    """Take every block of ours out. Markers that do not pair up are left alone,
+    because the end marker they would pair with belongs to somebody else's lines."""
+    return _without(text, _block_spans(text))
 
 
 def block_lines(text: str) -> list[str]:
-    """The lines inside our marked block, or none when there is no block."""
-    span = _block_span(text)
-    if span is None:
-        return []
-    inner = text[span[0] : span[1]].splitlines()
-    return [line for line in inner[1:-1]]
+    """The lines inside our marked blocks, in the order they appear in the file."""
+    inner: list[str] = []
+    for begin, end in _block_spans(text):
+        inner.extend(text[begin:end].splitlines()[1:-1])
+    return inner
 
 
 def merge_alias_lines(existing: list[str], wanted: list[str]) -> list[str]:
