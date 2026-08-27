@@ -16,7 +16,7 @@ from .estimate import human_gb
 from .hardware import Machine
 from .hub import Hub, HubError
 from .paths import Paths
-from .preset import Preset, PresetError
+from .preset import Preset, PresetError, smallest_model
 from .quant import QuantError, QuantOption, find_option, quant_options, suggest
 from .router import Router, RouterError
 from .settings import Settings, save_settings
@@ -65,18 +65,6 @@ def load_preset(paths: Paths) -> Preset | None:
         return Preset.load(paths.preset)
     except PresetError:
         return None
-
-
-def smallest_model(preset: Preset) -> str | None:
-    sizes: dict[str, int] = {}
-    for name in preset.sections():
-        try:
-            sizes[name] = sum(preset.file_sizes(name))
-        except PresetError:
-            continue
-    if not sizes:
-        return None
-    return min(sizes, key=sizes.get)
 
 
 def _header(io: Io, text: str) -> None:

@@ -249,3 +249,16 @@ class Preset:
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
+
+
+def smallest_model(preset: Preset) -> str | None:
+    """The section whose files are smallest on disk, or None when there are none."""
+    sizes: dict[str, int] = {}
+    for name in preset.sections():
+        try:
+            sizes[name] = sum(preset.file_sizes(name))
+        except PresetError:
+            continue
+    if not sizes:
+        return None
+    return min(sizes, key=sizes.get)
