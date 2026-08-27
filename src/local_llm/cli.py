@@ -19,7 +19,17 @@ import typer
 from rich.console import Console
 
 from . import __version__
-from .agents import AgentError, claude_env, copilot_env, exec_with_env, export_lines, resolve_model
+from .agents import (
+    AgentError,
+    aider_args,
+    aider_env,
+    claude_env,
+    copilot_env,
+    exec_with_env,
+    export_lines,
+    qwen_env,
+    resolve_model,
+)
 from .discover import GROUPS, Candidate, gather
 from .discover import search as discover_search
 from .doctor import Check, Env, run_checks  # noqa: F401 - Check re-exported for tests
@@ -566,6 +576,46 @@ def copilot(
         context = env.get("COPILOT_PROVIDER_MAX_PROMPT_TOKENS", "unknown")
         out.print(f"copilot -> {name} (context {context}, offline={'false' if online else 'true'})")
         exec_with_env("copilot", extra, env)
+    except AgentError as error:
+        fail(str(error))
+
+
+@app.command(context_settings=_PASSTHROUGH)
+def aider(
+    ctx: typer.Context,
+    model: str | None = typer.Argument(
+        None, autocompletion=complete_model, help="Model name; default from settings."
+    ),
+) -> None:
+    """Run aider against the router. Arguments after -- go to aider."""
+    st = state()
+    preset = st.preset()
+    model, extra = _split_agent_args(model, ctx.args)
+    try:
+        name = resolve_model(model, preset, st.settings)
+        env = aider_env(st.settings)
+        out.print(f"aider -> {name} at {st.settings.openai_base_url}")
+        exec_with_env("aider", aider_args(name, extra), env)
+    except AgentError as error:
+        fail(str(error))
+
+
+@app.command(context_settings=_PASSTHROUGH)
+def qwen(
+    ctx: typer.Context,
+    model: str | None = typer.Argument(
+        None, autocompletion=complete_model, help="Model name; default from settings."
+    ),
+) -> None:
+    """Run Qwen Code against the router. Arguments after -- go to qwen."""
+    st = state()
+    preset = st.preset()
+    model, extra = _split_agent_args(model, ctx.args)
+    try:
+        name = resolve_model(model, preset, st.settings)
+        env = qwen_env(name, st.settings)
+        out.print(f"qwen -> {name} at {st.settings.openai_base_url}")
+        exec_with_env("qwen", extra, env)
     except AgentError as error:
         fail(str(error))
 

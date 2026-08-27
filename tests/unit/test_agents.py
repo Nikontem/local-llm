@@ -4,10 +4,13 @@ import pytest
 
 from local_llm.agents import (
     AgentError,
+    aider_args,
+    aider_env,
     claude_env,
     copilot_env,
     exec_with_env,
     export_lines,
+    qwen_env,
     resolve_model,
 )
 from local_llm.preset import Preset
@@ -34,10 +37,39 @@ def test_claude_env():
         "ANTHROPIC_BASE_URL": "http://127.0.0.1:7000",
         "ANTHROPIC_MODEL": "big",
         "ANTHROPIC_API_KEY": "dummy",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "big",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "DISABLE_TELEMETRY": "1",
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "65536",
     }
     assert claude_env("small", PRESET, Settings(api_key="k"))["ANTHROPIC_API_KEY"] == "k"
     assert claude_env("small", PRESET, Settings())["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "8192"
+
+
+def test_claude_env_sets_the_small_model_and_quietens_extra_traffic():
+    env = claude_env("small", PRESET, Settings())
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:5678"
+    assert env["ANTHROPIC_MODEL"] == "small"
+    assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "small"
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "8192"
+    assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+
+
+def test_aider_env_and_args():
+    env = aider_env(Settings())
+    assert env["OPENAI_API_BASE"] == "http://127.0.0.1:5678/v1"
+    assert env["OPENAI_API_KEY"] == "dummy"
+    assert aider_args("small", ["--no-auto-commits"]) == [
+        "--model", "openai/small", "--no-auto-commits",
+    ]
+
+
+def test_qwen_env_sets_all_three_or_qwen_ignores_them():
+    env = qwen_env("small", Settings(api_key="secret"))
+    assert env["OPENAI_BASE_URL"] == "http://127.0.0.1:5678/v1"
+    assert env["OPENAI_MODEL"] == "small"
+    assert env["OPENAI_API_KEY"] == "secret"
+    assert all(value for value in env.values()), "Qwen Code needs all three non-empty"
 
 
 def test_copilot_env():

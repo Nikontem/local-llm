@@ -38,11 +38,40 @@ def claude_env(model: str, preset: Preset, settings: Settings) -> dict[str, str]
         "ANTHROPIC_BASE_URL": settings.anthropic_base_url,
         "ANTHROPIC_MODEL": model,
         "ANTHROPIC_API_KEY": settings.api_key or "dummy",
+        # Claude Code's background work asks for a Haiku-class model by name; point it
+        # at the same local model or the router is asked for something it has never
+        # heard of. ANTHROPIC_SMALL_FAST_MODEL is the deprecated spelling.
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
+        # Both react to being set at all, whatever the value. A local setup has no
+        # reason to make optional network calls.
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "DISABLE_TELEMETRY": "1",
     }
     context = _context(model, preset)
     if context:
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context
     return env
+
+
+def aider_env(settings: Settings) -> dict[str, str]:
+    """aider reads the endpoint from OPENAI_API_BASE; the model carries an openai/ prefix."""
+    return {
+        "OPENAI_API_BASE": settings.openai_base_url,
+        "OPENAI_API_KEY": settings.api_key or "dummy",
+    }
+
+
+def aider_args(model: str, extra: list[str]) -> list[str]:
+    return ["--model", f"openai/{model}", *extra]
+
+
+def qwen_env(model: str, settings: Settings) -> dict[str, str]:
+    """Qwen Code takes the OpenAI-compatible path only when all three are set."""
+    return {
+        "OPENAI_BASE_URL": settings.openai_base_url,
+        "OPENAI_API_KEY": settings.api_key or "dummy",
+        "OPENAI_MODEL": model,
+    }
 
 
 def copilot_env(
