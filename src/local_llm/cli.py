@@ -1259,13 +1259,15 @@ def setup(
 # ---------------------------------------------------------------- uninstall
 
 
-def _print_plan(inv, chosen: set[str]) -> None:
+def _print_plan(inv, chosen: set[str], sections: list[str]) -> None:
     for key in KEYS:
         if key not in chosen:
             continue
         out.print(f"{key}: {inv.summary(key)}")
         if key == "models":
             for entry in inv.models:
+                if entry.section not in sections:
+                    continue
                 out.print(f"  [{entry.section}]  {human_gb(entry.size)}")
                 for file in entry.files:
                     out.print(f"    {file}")
@@ -1275,6 +1277,8 @@ def _print_plan(inv, chosen: set[str]) -> None:
             for path in candidates:
                 if path:
                     out.print(f"    {path}")
+            for rc in inv.rc_with_retired:
+                out.print(f"    {rc}: a retired zsh line (put back only with --restore-shell-line)")
         elif key == "state":
             for path in [inv.state_dir, inv.settings_file]:
                 if path:
@@ -1284,6 +1288,17 @@ def _print_plan(inv, chosen: set[str]) -> None:
                 out.print(f"    {path}")
 
 
+def _numbers(answer: str, upper: int) -> list[int]:
+    """Parse '1 3' into [1, 3], refusing anything outside 1..upper."""
+    try:
+        picked = [int(token) for token in answer.split()]
+    except ValueError:
+        fail(f"Pick numbers between 1 and {upper}")
+    if not picked or any(n < 1 or n > upper for n in picked):
+        fail(f"Pick numbers between 1 and {upper}")
+    return picked
+
+
 def _pick_models(inv) -> list[str]:
     out.print("  models in models.ini:")
     for index, entry in enumerate(inv.models, start=1):
@@ -1291,10 +1306,7 @@ def _pick_models(inv) -> list[str]:
     answer = typer.prompt("  Numbers to remove (e.g. 1 3), a for all", default="a").strip().lower()
     if answer in ("a", "all"):
         return [entry.section for entry in inv.models]
-    try:
-        return [inv.models[int(token) - 1].section for token in answer.split()]
-    except (ValueError, IndexError):
-        fail(f"Pick numbers between 1 and {len(inv.models)}")
+    return [inv.models[n - 1].section for n in _numbers(answer, len(inv.models))]
 
 
 @app.command()
@@ -1351,17 +1363,14 @@ def uninstall(
             if answer in ("5", "a", "all"):
                 chosen = set(KEYS)
             else:
-                try:
-                    chosen = {KEYS[int(token) - 1] for token in answer.split()}
-                except (ValueError, IndexError):
-                    fail("Pick numbers between 1 and 5")
+                chosen = {KEYS[n - 1] for n in _numbers(answer, 4)}
             if "models" in chosen and inv.models:
                 sections = _pick_models(inv)
     if inv.empty:
         out.print("Nothing of local-llm's is left on this machine.")
         out.print(f"  to remove the tool itself:  {tool_uninstall_hint()}")
         return
-    _print_plan(inv, chosen)
+    _print_plan(inv, chosen, sections)
     if dry_run:
         out.print("Dry run: nothing was removed.")
         return

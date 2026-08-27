@@ -56,6 +56,7 @@ class Inventory:
 
     @property
     def empty(self) -> bool:
+        """Nothing left to remove. A retired zsh line does not count: it is only ever restored."""
         return not any(self.summary(key) != "nothing" for key in KEYS)
 
     def summary(self, key: str) -> str:
@@ -74,8 +75,6 @@ class Inventory:
                 parts.append("shell aliases")
             if self.completion_files or self.rc_with_bash_source:
                 parts.append("completion")
-            if self.rc_with_retired:
-                parts.append("a retired zsh line")
             return ", ".join(parts) or "nothing"
         if key == "state":
             parts = []
@@ -96,6 +95,18 @@ def _dir_size(path: Path) -> int:
         return 0
 
 
+def _model_files(preset: Preset, section: str) -> list[Path]:
+    return [
+        Path(value).expanduser()
+        for key in ("model", "mmproj")
+        if (value := preset.get(section, key, fallback_to_star=False))
+    ]
+
+
+def _backup_of(preset_path: Path) -> Path:
+    return preset_path.with_name(preset_path.name + ".bak")
+
+
 def inventory(
     paths: Paths, home: Path | None = None, env: Mapping[str, str] | None = None
 ) -> Inventory:
@@ -107,19 +118,16 @@ def inventory(
         try:
             preset = Preset.load(paths.preset)
             for section in preset.sections():
-                files = [
-                    Path(value)
-                    for key in ("model", "mmproj")
-                    if (value := preset.get(section, key, fallback_to_star=False))
+                existing = [
+                    f for f in _model_files(preset, section) if f.exists() or f.is_symlink()
                 ]
-                existing = [f for f in files if f.exists() or f.is_symlink()]
-                size = sum(f.stat().st_size for f in existing if f.exists())
+                size = sum(f.stat().st_size for f in existing if f.is_file())
                 inv.models.append(ModelEntry(section, existing, size))
         except PresetError:
             pass
         inv.preset_files.append(paths.preset)
-    backup = paths.preset.with_name(paths.preset.name + ".bak")
-    if backup.is_file():
+    backup = _backup_of(paths.preset)
+    if backup.is_file() or backup.is_symlink():
         inv.preset_files.append(backup)
 
     oc = opencode_paths(home=home, env=env)
@@ -141,13 +149,16 @@ def inventory(
             inv.completion_files.append(completion)
         rc = rc_file(shell, home)
         if rc.is_file():
-            text = rc.read_text()
-            if MARK_BEGIN in text and rc not in inv.rc_with_block:
+            lines = rc.read_text().splitlines()
+            if any(MARK_BEGIN in line for line in lines) and rc not in inv.rc_with_block:
                 inv.rc_with_block.append(rc)
-            if RETIRED_PREFIX in text and rc not in inv.rc_with_retired:
+            if (
+                any(line.startswith(RETIRED_PREFIX) for line in lines)
+                and rc not in inv.rc_with_retired
+            ):
                 inv.rc_with_retired.append(rc)
             if (
-                any(_BASH_SOURCE.match(line) for line in text.splitlines())
+                any(_BASH_SOURCE.match(line) for line in lines)
                 and rc not in inv.rc_with_bash_source
             ):
                 inv.rc_with_bash_source.append(rc)
@@ -160,14 +171,19 @@ def inventory(
 
 
 def delete_model_file(path: Path) -> None:
-    """Delete a model file; a Hugging Face cache entry is a symlink, so delete its blob too."""
+    """Delete a model file; a Hugging Face cache entry is a symlink, so delete its blob too.
+
+    Only a regular file is ever deleted through a link; a link to a directory
+    is removed as a link and the directory stays.
+    """
     target = path.resolve() if path.is_symlink() else None
     path.unlink(missing_ok=True)
-    if target is not None and target.exists():
+    if target is not None and target.is_file():
         target.unlink()
 
 
 def remove_models(paths: Paths, sections: list[str]) -> list[str]:
+    """Delete each section's files and drop the section; a file that cannot go keeps its section."""
     lines: list[str] = []
     try:
         preset = Preset.load(paths.preset)
@@ -177,15 +193,21 @@ def remove_models(paths: Paths, sections: list[str]) -> list[str]:
         if not preset.has_section(section):
             lines.append(f"no section [{section}]")
             continue
-        for key in ("model", "mmproj"):
-            value = preset.get(section, key, fallback_to_star=False)
-            if not value:
+        failed = False
+        for file in _model_files(preset, section):
+            if not (file.exists() or file.is_symlink()):
                 continue
-            file = Path(value)
-            if file.exists() or file.is_symlink():
-                size = file.stat().st_size if file.exists() else 0
+            size = file.stat().st_size if file.is_file() else 0
+            try:
                 delete_model_file(file)
-                lines.append(f"deleted {file} ({human_gb(size)})")
+            except OSError as error:
+                failed = True
+                lines.append(f"could not delete {file}: {error}")
+                continue
+            lines.append(f"deleted {file} ({human_gb(size)})")
+        if failed:
+            lines.append(f"kept [{section}] in {paths.preset} because a file could not be deleted")
+            continue
         preset.remove_section(section)
         lines.append(f"removed [{section}] from {paths.preset}")
     preset.save(paths.preset)
@@ -204,11 +226,24 @@ def _remove_agent(config: Path) -> str:
     return f"no tiny agent in {config}"
 
 
+def _restore_retired(text: str) -> str:
+    """Strip the retirement prefix from the lines that carry it, and only from those."""
+    restored = []
+    for line in text.splitlines(keepends=True):
+        if line.startswith(RETIRED_PREFIX):
+            line = line[len(RETIRED_PREFIX) :]
+        restored.append(line)
+    return "".join(restored)
+
+
 def remove_integrations(inv: Inventory, *, restore_retired: bool = False) -> list[str]:
     lines: list[str] = []
     if inv.plugin and inv.plugin.exists():
-        inv.plugin.unlink()
-        lines.append(f"deleted {inv.plugin}")
+        try:
+            inv.plugin.unlink()
+            lines.append(f"deleted {inv.plugin}")
+        except OSError as error:
+            lines.append(f"could not delete {inv.plugin}: {error}")
     if inv.agent_config and inv.tiny_model:
         if inv.agent_editable:
             lines.append(_remove_agent(inv.agent_config))
@@ -217,18 +252,17 @@ def remove_integrations(inv: Inventory, *, restore_retired: bool = False) -> lis
                 f'{inv.agent_config} has comments, so it is not rewritten: remove the "tiny" agent'
                 " entry from it by hand"
             )
-    for rc in {
-        *inv.rc_with_block,
-        *inv.rc_with_bash_source,
-        *(inv.rc_with_retired if restore_retired else []),
-    }:
+    rc_files = {*inv.rc_with_block, *inv.rc_with_bash_source}
+    if restore_retired:
+        rc_files.update(inv.rc_with_retired)
+    for rc in sorted(rc_files):
         text = rc.read_text()
         updated = remove_block(text)
         updated = "".join(
             line for line in updated.splitlines(keepends=True) if not _BASH_SOURCE.match(line)
         )
         if restore_retired:
-            updated = updated.replace(RETIRED_PREFIX, "")
+            updated = _restore_retired(updated)
         if updated != text:
             rc.write_text(updated)
             what = []
@@ -241,29 +275,57 @@ def remove_integrations(inv: Inventory, *, restore_retired: bool = False) -> lis
             lines.append(f"{rc}: {', '.join(what)}")
     for completion in inv.completion_files:
         if completion.exists():
-            completion.unlink()
-            lines.append(f"deleted {completion}")
+            try:
+                completion.unlink()
+                lines.append(f"deleted {completion}")
+            except OSError as error:
+                lines.append(f"could not delete {completion}: {error}")
     return lines
 
 
 def remove_state(inv: Inventory) -> list[str]:
     lines: list[str] = []
-    if inv.state_dir and inv.state_dir.exists():
+    if inv.state_dir and (inv.state_dir.exists() or inv.state_dir.is_symlink()):
         size = _dir_size(inv.state_dir)
-        shutil.rmtree(inv.state_dir)
-        lines.append(f"deleted {inv.state_dir} ({human_gb(size)})")
+        try:
+            if inv.state_dir.is_symlink():
+                inv.state_dir.unlink()
+            else:
+                shutil.rmtree(inv.state_dir)
+            lines.append(f"deleted {inv.state_dir} ({human_gb(size)})")
+        except OSError as error:
+            lines.append(f"could not delete {inv.state_dir}: {error}")
     if inv.settings_file and inv.settings_file.exists():
-        inv.settings_file.unlink()
-        lines.append(f"deleted {inv.settings_file}")
+        try:
+            inv.settings_file.unlink()
+            lines.append(f"deleted {inv.settings_file}")
+        except OSError as error:
+            lines.append(f"could not delete {inv.settings_file}: {error}")
     return lines
 
 
 def remove_config(inv: Inventory) -> list[str]:
+    """Delete models.ini and its backup, then the config directory if nothing else is in it.
+
+    The backup path is resolved here, not taken from the inventory: removing
+    models a moment earlier re-creates it through Preset.save.
+    """
     lines: list[str] = []
+    candidates: list[Path] = list(inv.preset_files)
     for file in inv.preset_files:
-        if file.exists():
-            file.unlink()
-            lines.append(f"deleted {file}")
+        if file.name.endswith(".ini"):
+            candidates.append(_backup_of(file))
+    seen: set[Path] = set()
+    for file in candidates:
+        if file in seen:
+            continue
+        seen.add(file)
+        if file.exists() or file.is_symlink():
+            try:
+                file.unlink()
+                lines.append(f"deleted {file}")
+            except OSError as error:
+                lines.append(f"could not delete {file}: {error}")
     directory = inv.config_dir
     if directory.is_dir():
         leftovers = [p.name for p in directory.iterdir()]

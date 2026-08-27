@@ -99,3 +99,15 @@ def test_add_then_remove_last_section_restores_the_file():
     p.add_section("b", [("model", "/m/b.gguf")], comments=["added by local-llm"])
     p.remove_section("b")
     assert p.dump() == BASE
+
+
+def test_save_never_writes_through_a_symlinked_backup(tmp_path):
+    target = tmp_path / "models.ini"
+    target.write_text(BASE)
+    notes = tmp_path / "IMPORTANT.txt"
+    notes.write_text("keep")
+    backup = tmp_path / "models.ini.bak"
+    backup.symlink_to(notes)
+    Preset.load(target).save(target)
+    assert notes.read_text() == "keep"
+    assert backup.is_file() and not backup.is_symlink() and backup.read_text() == BASE

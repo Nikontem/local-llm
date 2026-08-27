@@ -170,3 +170,72 @@ def test_tool_uninstall_hint_by_executable_location():
         == "pipx uninstall local-llm"
     )
     assert tool_uninstall_hint("/usr/bin/python3") == "python3 -m pip uninstall local-llm"
+
+
+def test_model_outside_the_cache_and_tilde_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    paths = Paths.from_env(env={}, home=tmp_path)
+    paths.config_dir.mkdir(parents=True)
+    plain = tmp_path / "mine.gguf"
+    plain.write_bytes(b"q" * 7)
+    paths.preset.write_text("[t]\nmodel = ~/mine.gguf\n")
+    inv = inventory(paths, home=tmp_path, env={"HOME": str(tmp_path)})
+    assert inv.models[0].files == [plain] and inv.models[0].size == 7
+    lines = remove_models(paths, ["t"])
+    assert not plain.exists() and any("deleted" in line for line in lines)
+    assert Preset.load(paths.preset).sections() == []
+
+
+def test_symlink_to_a_directory_removes_only_the_link(tmp_path):
+    paths = Paths.from_env(env={}, home=tmp_path)
+    paths.config_dir.mkdir(parents=True)
+    directory = tmp_path / "adir"
+    directory.mkdir()
+    (directory / "inner").write_text("x")
+    link = tmp_path / "weird.gguf"
+    link.symlink_to(directory)
+    paths.preset.write_text(f"[w]\nmodel = {link}\n")
+    lines = remove_models(paths, ["w"])
+    assert not link.is_symlink() and (directory / "inner").exists()
+    assert Preset.load(paths.preset).sections() == []
+    assert not any("could not" in line for line in lines)
+
+
+def test_state_dir_symlink_is_unlinked_not_followed(tmp_path):
+    paths = Paths.from_env(env={}, home=tmp_path)
+    real = tmp_path / "realstate"
+    real.mkdir()
+    (real / "keep").write_text("k")
+    paths.state_dir.parent.mkdir(parents=True)
+    paths.state_dir.symlink_to(real)
+    inv = inventory(paths, home=tmp_path, env={})
+    remove_state(inv)
+    assert not paths.state_dir.is_symlink() and (real / "keep").exists()
+
+
+def test_restore_only_strips_prefixed_lines(tmp_path):
+    paths = populate(tmp_path)
+    zshrc = tmp_path / ".zshrc"
+    zshrc.write_text(zshrc.read_text() + 'echo "# retired by local-llm: nothing"\n')
+    remove_integrations(inventory(paths, home=tmp_path, env={}), restore_retired=True)
+    text = zshrc.read_text()
+    assert 'echo "# retired by local-llm: nothing"' in text
+    assert text.count(RETIRED_PREFIX) == 1 and "&& source" in text
+
+
+def test_remove_config_also_removes_a_backup_created_after_inventory(tmp_path):
+    paths = populate(tmp_path)
+    (paths.config_dir / "models.ini.bak").unlink()
+    inv = inventory(paths, home=tmp_path, env={})
+    remove_models(paths, ["a", "b"])  # Preset.save recreates the backup
+    assert (paths.config_dir / "models.ini.bak").exists()
+    remove_state(inv)
+    remove_config(inv)
+    assert not (paths.config_dir / "models.ini.bak").exists() and not paths.config_dir.exists()
+
+
+def test_retired_line_alone_counts_as_nothing_left(tmp_path):
+    paths = Paths.from_env(env={}, home=tmp_path)
+    (tmp_path / ".zshrc").write_text(f"{RETIRED_PREFIX}source x\n")
+    inv = inventory(paths, home=tmp_path, env={})
+    assert inv.rc_with_retired and inv.empty

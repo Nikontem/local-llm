@@ -237,7 +237,10 @@ class Preset:
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
-            shutil.copy2(path, path.with_name(path.name + ".bak"))
+            backup = path.with_name(path.name + ".bak")
+            if backup.is_symlink():
+                backup.unlink()  # never write through a link somebody put there
+            shutil.copy2(path, backup)
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
         try:
             with os.fdopen(fd, "w") as handle:
