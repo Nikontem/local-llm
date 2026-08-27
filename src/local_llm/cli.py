@@ -64,6 +64,7 @@ from .shellrc import (
     rc_file,
     remove_block,
     retire_old_source,
+    shadowed_aliases,
     upsert_block,
 )
 from .uninstall import (
@@ -1198,12 +1199,14 @@ def _alias_block(
         # block below the stray marker is exactly what later empties the whole file.
         return [marker_warning(rc, problem)]
     updated, retired = retire_old_source(text)
+    names = [name for name, _ in [TOOL_ALIAS, *extra_aliases]]
     if aliases:
         wanted = alias_lines(shell, [TOOL_ALIAS, *extra_aliases])
         merged = merge_alias_lines(block_lines(updated), wanted)
         updated = upsert_block(updated, merged)
     else:
         updated = remove_block(updated)
+    on_disk = text
     if updated != text:
         if yes or typer.confirm(f"Update {rc}?", default=True):
             try:
@@ -1213,22 +1216,48 @@ def _alias_block(
             except OSError as error:
                 lines.append(f"could not update {rc}: {error}")
                 return lines
+            on_disk = updated
             if retired:
                 lines.append(f"retired {retired} old line(s) that sourced local_llm.zsh in {rc}")
             if aliases:
-                names = ", ".join(name for name, _ in [TOOL_ALIAS, *extra_aliases])
-                lines.append(f"aliases {names} added to {rc}")
+                lines.append(f"aliases {', '.join(names)} added to {rc}")
             else:
                 lines.append(f"aliases removed from {rc}")
+    if aliases:
+        # A shell takes the last definition it reads, so an alias of the same name
+        # elsewhere in the file leaves one of the two doing nothing, in silence.
+        for name, winner in shadowed_aliases(on_disk, names):
+            lines.append(
+                f"{rc} defines {name} again above our block, so ours wins and that one"
+                " has no effect"
+                if winner == "ours"
+                else f"{rc} defines {name} again below our block, so that one wins and"
+                " the alias here has no effect"
+            )
     return lines
 
 
-def _help_paragraph(text: str, width: int = 76) -> str:
+def _help_width() -> int:
+    """How wide the pre-wrapped help paragraphs below may be.
+
+    Click will not reflow a paragraph marked as preformatted, so a fixed width made
+    them spill off the side of a narrow window. This is the one chance to fit them to
+    it, and it is taken as the module loads, which for a command-line tool is a moment
+    before the help is printed.
+    """
+    columns = shutil.get_terminal_size(fallback=(80, 24)).columns
+    return max(40, min(columns - 4, 76))
+
+
+def _help_paragraph(text: str, width: int | None = None) -> str:
     """Pre-wrap one paragraph so Click keeps names like google-antigravity in one piece.
 
     A paragraph beginning with the backspace marker is printed as written.
     """
-    return "\b\n" + "\n".join(textwrap.wrap(text, width=width, break_on_hyphens=False))
+    wrapped = textwrap.wrap(
+        text, width=_help_width() if width is None else width, break_on_hyphens=False
+    )
+    return "\b\n" + "\n".join(wrapped)
 
 
 INTEGRATE_HELP = f"""Wire coding agents and other tools to the router.

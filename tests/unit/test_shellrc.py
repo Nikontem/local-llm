@@ -199,3 +199,21 @@ def test_two_whole_blocks_converge_to_one_and_keep_every_alias(tmp_path):
     assert updated.count(MARK_BEGIN) == 1 and updated.count(MARK_END) == 1
     assert block_lines(updated) == ["alias one='x'", "alias two='y'", "alias three='z'"]
     assert "export A=1" in updated and "export B=2" in updated
+
+
+def test_an_alias_defined_outside_our_block_is_named_and_the_winner_said():
+    """A shell takes the last definition it reads, so one of the two does nothing."""
+    from local_llm.shellrc import shadowed_aliases
+
+    above = "alias llm='ollama run'\n" + block_text(["alias llm='local-llm'"])
+    assert shadowed_aliases(above, ["llm"]) == [("llm", "ours")]
+
+    below = block_text(["alias llm='local-llm'"]) + "alias llm='ollama run'\n"
+    assert shadowed_aliases(below, ["llm"]) == [("llm", "theirs")]
+
+    assert shadowed_aliases(above, ["other"]) == []
+    lone = "alias llm='ollama run'\n"
+    assert shadowed_aliases(lone, ["llm"]) == [], "no block of ours, nothing to shadow"
+
+    twice = "alias llm='one'\n" + block_text(["alias llm='local-llm'"]) + "alias llm='two'\n"
+    assert shadowed_aliases(twice, ["llm"]) == [("llm", "theirs")], "the last one decides"

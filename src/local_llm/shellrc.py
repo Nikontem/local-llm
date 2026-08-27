@@ -190,6 +190,31 @@ def block_lines(text: str) -> list[str]:
     return inner
 
 
+def shadowed_aliases(text: str, names: Sequence[str]) -> list[tuple[str, str]]:
+    """Aliases of ours that a line outside our block also defines, and which one wins.
+
+    A shell takes the last definition it reads, so where the other line sits decides
+    the outcome: above our block it loses to ours, below it wins. Either way one of
+    the two silently does nothing, which is worth a line of output.
+
+    The answer is ("ours") or ("theirs") per name. A name defined outside the block
+    more than once is answered for by the last of them, which is the one that counts.
+    """
+    spans = _block_spans(text)
+    if not spans:
+        return []
+    begin, end = spans[0]
+    wanted = set(names)
+    winners: dict[str, str] = {}
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        name = alias_name(line)
+        if name in wanted and not (begin <= offset < end):
+            winners[name] = "ours" if offset < begin else "theirs"
+        offset += len(line)
+    return [(name, winners[name]) for name in names if name in winners]
+
+
 def merge_alias_lines(existing: list[str], wanted: list[str]) -> list[str]:
     """Add-only: an alias already there is never dropped, whatever we were asked for."""
     have = {alias_name(line) for line in existing}

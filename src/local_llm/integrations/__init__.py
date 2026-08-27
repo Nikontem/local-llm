@@ -50,11 +50,18 @@ def atomic_write(target: Path, text: str, *, backup: bool = True) -> None:
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(text)
-        if destination.is_file():
-            # A temporary file is created readable by its owner alone. Renaming it over
-            # a file that was there already would quietly take away the permissions
-            # somebody chose for it, so they are carried across first.
-            os.chmod(temporary, destination.stat().st_mode & 0o7777)
+            if destination.is_file():
+                # A temporary file is created readable by its owner alone. Renaming it
+                # over a file that was there already would quietly take away the
+                # permissions somebody chose for it, so they are carried across first.
+                # Through the open descriptor, not the path: nothing can be swapped in
+                # between deciding on a file and changing it.
+                os.fchmod(stream.fileno(), destination.stat().st_mode & 0o7777)
+            # A rename is atomic against a process that dies, but the bytes behind it
+            # may still be in the kernel's cache. Without this, a machine that loses
+            # power just after the rename can come back to a file of zeros.
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary, destination)
     finally:
         # A failed write must not litter the directory with hidden half-files.

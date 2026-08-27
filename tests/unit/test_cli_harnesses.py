@@ -241,3 +241,20 @@ def test_completion_is_installed_after_the_rc_file_is_judged(tmp_path, monkeypat
     assert any("left exactly as it is" in line for line in lines)
     assert any("completion written to" in line for line in lines)
     assert "alias half='x'" in rc.read_text(), "the half block was repaired anyway"
+
+
+def test_an_alias_of_the_same_name_elsewhere_in_the_rc_file_is_reported(tmp_path, monkeypatch):
+    """One of the two definitions silently does nothing, and nothing used to say so."""
+    rc = tmp_path / ".zshrc"
+    rc.write_text("alias local_llm='ollama run llama3'\nexport A=1\n")
+    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(cli, "install_completion", lambda shell: tmp_path / "completion")
+
+    lines = cli._integrate_shell("zsh", aliases=True, yes=True)
+
+    assert any("local_llm" in line and "ours wins" in line for line in lines), lines
+
+    rc.write_text(rc.read_text() + "alias local_llm='ollama run llama3'\n")
+    again = cli._integrate_shell("zsh", aliases=True, yes=True)
+
+    assert any("that one wins" in line for line in again), again

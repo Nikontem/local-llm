@@ -224,10 +224,12 @@ def run_checks(
     except OSError as error:
         checks.append(Check("config dir", "fail", f"cannot create {paths.config_dir}: {error}"))
 
-    # models.ini
+    # models.ini. The loaded preset is kept for the agents section further down, which
+    # needs the same file and used to read and parse it a second time.
+    configured_models: Preset | None = None
     if paths.preset.is_file():
         try:
-            preset = Preset.load(paths.preset)
+            preset = configured_models = Preset.load(paths.preset)
             problems: list[str] = []
             for name in preset.sections():
                 try:
@@ -278,10 +280,6 @@ def run_checks(
     from .integrations.codex import codex_paths, configured_base_url
 
     installed, missing = harnesses.detect(env.which)
-    try:  # a models.ini doctor has already complained about must not stop the report
-        configured_models = Preset.load(paths.preset) if paths.preset.is_file() else None
-    except PresetError:
-        configured_models = None
     context = HarnessContext(
         paths=paths,
         settings=settings,
