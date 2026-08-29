@@ -41,6 +41,8 @@ into `models.ini`, offers to wire up whichever coding agents it finds installed,
 the router. Nothing is downloaded or overwritten without asking, and the wizard can be
 re-run at any time — each step detects what is already done and skips it.
 
+<img src="demo/clips/setup_search.gif" alt="local-llm setup picking and downloading a model" width="700">
+
 ## What you get
 
 ```
@@ -58,6 +60,8 @@ Local LLM router
 The router serves an OpenAI-style endpoint at `http://127.0.0.1:5678/v1` and an
 Anthropic-style one at `http://127.0.0.1:5678`. Any model named in `models.ini` can be
 asked for by name in the `model` field of a request, with no restart.
+
+<img src="demo/clips/router_ui.gif" alt="llama-server's web UI, opened with local-llm ui" width="700">
 
 ## The commands
 
