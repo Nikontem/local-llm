@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import hub
+from . import hub, logs
 from .paths import Paths
 from .preset import Preset, PresetError
 from .router import API_KEY_VARIABLE
@@ -307,6 +307,24 @@ def run_checks(
         checks.append(Check("state dir", "ok", str(paths.state_dir)))
     except OSError as error:
         checks.append(Check("state dir", "fail", f"cannot create {paths.state_dir}: {error}"))
+
+    # A model that could not be fitted loaded anyway, at its full unreduced
+    # size. llama.cpp only warns; nothing else in this tool would notice.
+    log_path = logs.current_log(paths.log_dir)
+    if log_path is not None:
+        try:
+            text = log_path.read_text(errors="replace")
+        except OSError:
+            text = ""
+        if "failed to fit params" in text:
+            checks.append(Check(
+                "model fit", "warn",
+                "a model loaded without fitting into free memory; it may swap or fail",
+                fix=(
+                    "Lower that model's fit-ctx in models.ini, raise reserve_gb in"
+                    " settings.toml, or use a smaller quantisation."
+                ),
+            ))
 
     # port
     if not env.port_in_use(settings.host, settings.port):
