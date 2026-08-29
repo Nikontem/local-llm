@@ -267,6 +267,33 @@ def run_checks(
                 checks.append(Check(
                     "models.ini", "ok", f"{len(preset.sections())} model(s), all files present"
                 ))
+
+            # Sections written before the context floor pin `c`, which stops
+            # llama-server's fitter adjusting anything at all for that model.
+            # Their files are never rewritten without being asked, so the only
+            # thing to do is say so.
+            star_context = preset.items("*").get("c")
+            pinned = [
+                name for name in preset.sections()
+                if preset.get(name, "c", fallback_to_star=False) is not None
+            ]
+            if star_context is not None:
+                detail = f"[*] pins c = {star_context} for every model"
+                if pinned:
+                    detail += f"; also set on {', '.join(pinned)}"
+            elif pinned:
+                detail = f"{len(pinned)} model(s) pin a fixed context: {', '.join(pinned)}"
+            else:
+                detail = ""
+            if detail:
+                checks.append(Check(
+                    "context sizing", "ok", detail,
+                    fix=(
+                        "These load at exactly that context and llama.cpp will not adjust"
+                        " them if memory is short. Replace `c = N` with `fit-ctx = N` in"
+                        " models.ini to let the context be chosen at load time."
+                    ),
+                ))
         except PresetError as error:
             checks.append(Check("models.ini", "fail", str(error)))
     else:

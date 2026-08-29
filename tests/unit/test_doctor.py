@@ -67,6 +67,35 @@ def test_everything_ok_on_a_healthy_mac(tmp_path):
     assert "Claude Code" in checks["agents"].detail
 
 
+def test_doctor_notes_sections_that_still_pin_a_fixed_context(tmp_path):
+    paths = healthy_paths(tmp_path)
+    paths.preset.write_text(
+        f"[*]\njinja = true\n"
+        f"[a/b:Q4]\nmodel = {tmp_path}/m.gguf\nc = 65536\n"
+        f"[c/d:Q4]\nmodel = {tmp_path}/m.gguf\nfit-ctx = 16384\n"
+    )
+    note = by_name(run_checks(paths, Settings(), env=mac_env()))["context sizing"]
+    assert note.status == "ok"
+    assert "a/b:Q4" in note.detail and "c/d:Q4" not in note.detail
+
+
+def test_doctor_names_a_context_pinned_for_every_model_at_once(tmp_path):
+    # A `c` in the wildcard block pins the context for every model, which is a
+    # worse case than one section pinning its own.
+    paths = healthy_paths(tmp_path)
+    paths.preset.write_text(f"[*]\nc = 8192\n[m]\nmodel = {tmp_path}/m.gguf\n")
+    note = by_name(run_checks(paths, Settings(), env=mac_env()))["context sizing"]
+    assert note.status == "ok" and "every model" in note.detail
+
+
+def test_doctor_says_nothing_when_no_section_pins_a_context(tmp_path):
+    paths = healthy_paths(tmp_path)
+    paths.preset.write_text(
+        f"[*]\njinja = true\n[c/d:Q4]\nmodel = {tmp_path}/m.gguf\nfit-ctx = 16384\n"
+    )
+    assert "context sizing" not in by_name(run_checks(paths, Settings(), env=mac_env()))
+
+
 def test_missing_brew_on_mac_is_fatal_and_optional_on_linux(tmp_path):
     no_brew = mac_env(which=lambda name: None)
     checks = by_name(run_checks(healthy_paths(tmp_path), Settings(), env=no_brew))
