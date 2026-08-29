@@ -312,9 +312,16 @@ def status() -> None:
     out.print()
     kids = router.children()
     statuses: dict[str, str] = {}
+    contexts: dict[str, int] = {}
     try:
         for entry in router.list_models().get("data", []):
-            statuses[str(entry.get("id"))] = str((entry.get("status") or {}).get("value", ""))
+            name = str(entry.get("id"))
+            statuses[name] = str((entry.get("status") or {}).get("value", ""))
+            # `meta` is present only while the model is actually loaded, which is
+            # the only time there is a context to report.
+            ctx = (entry.get("meta") or {}).get("n_ctx")
+            if isinstance(ctx, int) and ctx > 0:
+                contexts[name] = ctx
     except RouterError:
         pass
     if kids:
@@ -327,7 +334,11 @@ def status() -> None:
                 note = "  (asleep)"
             else:
                 note = ""
-            out.print(f"    {kid.model or '?':<32} pid {kid.pid}  {human_gb(kid.rss)}{note}")
+            ctx = contexts.get(kid.model or "")
+            size = f"  ctx {ctx}" if ctx else ""
+            out.print(
+                f"    {kid.model or '?':<32} pid {kid.pid}  {human_gb(kid.rss)}{size}{note}"
+            )
     else:
         out.print("  loaded models:  none resident")
     out.print()

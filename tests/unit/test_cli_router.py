@@ -101,6 +101,19 @@ def test_status_when_running(harness):
     assert "small" in result.output and "(asleep)" in result.output
 
 
+def test_status_shows_the_context_each_resident_model_received(harness):
+    h = harness
+    running_router(h, children=[(43, "big", 0)])
+    h.http.responses[("GET", "/models")] = {
+        "data": [
+            {"id": "big", "status": {"value": "ready"}, "meta": {"n_ctx": 40960}},
+        ]
+    }
+    result = h.run("status")
+    assert result.exit_code == 0
+    assert "40960" in result.output
+
+
 def test_restart_restores_loaded_models(harness):
     h = harness
     running_router(h, ui=True, children=[(43, "big", 0)])
