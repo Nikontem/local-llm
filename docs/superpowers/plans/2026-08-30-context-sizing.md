@@ -414,7 +414,7 @@ git commit -m "feat(doctor): models pinned to a fixed context are named"
 
 ### Task 5: Status shows the context a model actually got
 
-**Skip this task entirely if Task 1 found no way to read a loaded model's context.** Record the skip in the plan rather than inventing a source.
+**Task 1 confirmed this task goes ahead.** The router's `/v1/models` response carries a `meta` object, present only for models that are actually loaded, holding `n_ctx`. Read it as `(entry.get("meta") or {}).get("n_ctx")` — it is nested, **not** a top-level `n_ctx` field. A model that is listed but not resident has no `meta`, which is exactly the "no context to show" case.
 
 **Files:**
 - Modify: `src/local_llm/router.py` (extend `list_models()`'s consumer, or add a helper beside `loaded_model_names()` at line 409), `src/local_llm/cli.py:334-350`
@@ -433,7 +433,7 @@ In `tests/unit/test_cli_router.py`, following the file's existing pattern for se
 ```python
 def test_status_shows_the_context_each_resident_model_received(harness):
     harness.http.responses[("GET", "/v1/models")] = {"data": [
-        {"id": "big", "status": {"value": "ready"}, "n_ctx": 40960},
+        {"id": "big", "status": {"value": "ready"}, "meta": {"n_ctx": 40960}},
     ]}
     # Seed the router pid file and a child process exactly as the existing
     # status tests in this file do, with the child's alias set to "big".
@@ -456,7 +456,9 @@ In `src/local_llm/cli.py`, the loop at line 334 already builds a `statuses` dict
         for entry in router.list_models().get("data", []):
             name = str(entry.get("id"))
             statuses[name] = str((entry.get("status") or {}).get("value", ""))
-            ctx = entry.get("n_ctx")
+            # `meta` is present only while the model is actually loaded, which is
+            # the only time there is a context to report.
+            ctx = (entry.get("meta") or {}).get("n_ctx")
             if isinstance(ctx, int) and ctx > 0:
                 contexts[name] = ctx
     except RouterError:
@@ -473,7 +475,7 @@ and in the line that prints each child, append the context when it is known:
             )
 ```
 
-Replace `n_ctx` throughout with whatever field name Task 1 actually found.
+The field name and nesting above are what Task 1 actually observed; use them verbatim.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
