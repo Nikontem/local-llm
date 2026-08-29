@@ -129,6 +129,26 @@ def test_load_uses_the_kv_cache_when_the_header_is_readable(harness):
     assert "weights + KV cache at c=65536" in result.output
 
 
+def test_load_falls_back_to_the_context_floor_capped_below_the_trained_context(harness):
+    """A context-floor section has no `c`. Before this fallback, `load` used the
+    model's full trained context_length instead - uncapped, unlike suggest_context -
+    which could make the budget guard refuse models it used to permit."""
+    h = harness
+    from local_llm import cli
+    from local_llm.estimate import GIB
+    h.backend.add(42, ["/opt/bin/llama-server", "--port", "5678"], listening={5678})
+    h.paths.ensure_state_dirs()
+    h.paths.pid_file.write_text("42\n")
+    h.monkeypatch.setattr(cli, "total_ram", lambda: 48 * GIB)
+    write_gguf(h.tmp / "big.gguf", QWEN38)
+    h.paths.preset.write_text(
+        f"[big]\nmodel = {h.tmp}/big.gguf\nfit-ctx = 16384\ncache-type-k = q8_0\n"
+    )
+    result = h.run("load", "big")
+    assert result.exit_code == 0, result.output
+    assert "weights + KV cache at floor fit-ctx=16384" in result.output
+
+
 def test_remove_while_running_does_not_suggest_loading_it(hubbed):
     h = hubbed
     assert h.run("pull", f"{REPO}:Q8_0", "--yes").exit_code == 0

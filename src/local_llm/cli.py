@@ -335,9 +335,9 @@ def status() -> None:
             else:
                 note = ""
             ctx = contexts.get(kid.model or "")
-            size = f"  ctx {ctx}" if ctx else ""
+            ctx_text = f"  ctx {ctx}" if ctx else ""
             out.print(
-                f"    {kid.model or '?':<32} pid {kid.pid}  {human_gb(kid.rss)}{size}{note}"
+                f"    {kid.model or '?':<32} pid {kid.pid}  {human_gb(kid.rss)}{ctx_text}{note}"
             )
     else:
         out.print("  loaded models:  none resident")
@@ -500,13 +500,31 @@ def load(
             header = read_header(Path(preset.get(name, "model", fallback_to_star=False) or ""))
         except GgufError:
             header = None
-        context = int(preset.get(name, "c") or preset.get(name, "ctx-size") or 0)
-        if header is not None and context <= 0:
+        pinned = int(preset.get(name, "c") or preset.get(name, "ctx-size") or 0)
+        # `fit-ctx` is a floor, not the context that will actually load - but it
+        # is a guaranteed lower bound, so it is the conservative number to budget
+        # against. Falling all the way to the model's trained context_length
+        # instead (uncapped, unlike suggest_context) would make this estimate,
+        # and the budget refusal below, far more pessimistic than the fitter
+        # itself will ever be.
+        floor = int(preset.get(name, "fit-ctx") or 0)
+        if pinned > 0:
+            context = pinned
+        elif floor > 0:
+            context = floor
+        elif header is not None:
             context = header.context_length
+        else:
+            context = 0
         cache_type = preset.get(name, "cache-type-k") or "f16"
         if header is not None and context > 0:
             estimate = refined_estimate(sizes, header, context, cache_type)
-            detail = f"weights + KV cache at c={context}"
+            if pinned > 0:
+                detail = f"weights + KV cache at c={context}"
+            elif floor > 0:
+                detail = f"weights + KV cache at floor fit-ctx={context}"
+            else:
+                detail = f"weights + KV cache at c={context}"
         else:
             estimate = estimate_bytes(sizes)
             detail = "weights plus headroom"

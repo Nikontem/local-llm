@@ -21,6 +21,12 @@ PRESET = Preset.parse(
     "[small]\nmodel = /s.gguf\n"
 )
 
+# A section as the context-floor feature writes it: no `c` or `ctx-size` anywhere,
+# only the guaranteed-lower-bound `fit-ctx`. Kept separate from PRESET above -
+# which pins `c` for every model via `[*]` - so this actually exercises the
+# fallback rather than being masked by the wildcard.
+FLOOR_PRESET = Preset.parse("[floor]\nmodel = /f.gguf\nfit-ctx = 16384\n")
+
 
 def test_resolve_model_uses_default_and_validates():
     assert resolve_model(None, PRESET, Settings(default_model="big")) == "big"
@@ -53,6 +59,19 @@ def test_claude_env_sets_the_small_model_and_quietens_extra_traffic():
     assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "small"
     assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "8192"
     assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+
+
+def test_claude_env_falls_back_to_the_context_floor():
+    """A section the context-floor feature wrote has no `c` or `ctx-size` at all -
+    `CLAUDE_CODE_AUTO_COMPACT_WINDOW` must still come from `fit-ctx` rather than
+    silently disappearing."""
+    env = claude_env("floor", FLOOR_PRESET, Settings())
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "16384"
+
+
+def test_copilot_env_falls_back_to_the_context_floor():
+    env = copilot_env("floor", FLOOR_PRESET, Settings())
+    assert env["COPILOT_PROVIDER_MAX_PROMPT_TOKENS"] == "16384"
 
 
 def test_aider_env_and_args():
