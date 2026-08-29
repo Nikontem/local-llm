@@ -240,18 +240,53 @@ memory` warning means a model loaded in a state we know to be unsafe.
 the model and suggesting the remedies: a smaller floor, a larger
 `reserve_gb`, or a smaller quantisation.
 
-Both depend on a fact this document does not establish and the implementation
-plan must confirm first. For `status`, whether the router's API exposes the
-child's context — the `/v1/models` response or the child's own `/props`
-endpoint are the candidates — and if it does not, whether reading it from the
-log is acceptable. For `doctor`, whether that warning is printed at the
-router's default log verbosity at all; the observations in section 3 were
-made at verbosity 4, and if the line is invisible at the default then either
-`doctor` must say it cannot tell, or the router's verbosity must change,
-which is a bigger decision than this document should make on its own.
+Both facts have now been checked against a live router (Apple M4 Pro, llama.cpp
+0.3.0/build 10621), loading `Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M` through the
+real `models.ini`. Both hold, so both reports go ahead.
 
-If either turns out not to be reachable, the corresponding report is dropped
-and this document is amended. Neither blocks section 4 or 5.
+**The router's API exposes a loaded child's context.** Loading the model and
+requesting `GET /v1/models` returns, for that model's entry, a `meta` object
+that is absent from every unloaded model's entry:
+
+```json
+"meta": {
+    "vocab_type": true,
+    "n_vocab": 151936,
+    "n_ctx": 32768,
+    "n_ctx_train": 32768,
+    "n_embd": 1536,
+    "n_params": 1777088000,
+    "size": 1111370240,
+    "ftype": "Q4_K - Medium"
+}
+```
+
+The field is `n_ctx`, and it matches the `c = 32768` set for this model in
+`models.ini`. `status` reads it from `/v1/models`; the child's own `/props`
+endpoint was not needed as a fallback. Task 5 goes ahead using `meta.n_ctx`.
+
+**The failed-fit warning is visible at the router's default log verbosity.**
+Starting `llama-server` directly with no `-lv` flag at all — the same
+invocation `doctor` will see in practice — logs its own verbosity as the
+default:
+
+```
+0.00.056.283 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+```
+
+Forcing an unfittable load (`--n-gpu-layers all --fit-target 38200 --fit-ctx
+32768` against a machine reporting 38338 MiB of Metal memory) produced the
+warning at that same default verbosity:
+
+```
+0.00.171.733 W common_fit_params: failed to fit params to free device memory: n_gpu_layers already set by user to -2, abort
+```
+
+`grep -c 'failed to fit params' default_verbosity.log` returned `1`. The
+observations in section 3 were made at `-lv 4`, but that turns out not to have
+mattered — the line is a `W` (warning)-level log entry, and warnings survive
+the default. `doctor` can scan the ordinary log for it without any change to
+the router's verbosity. Task 6 goes ahead as specified.
 
 ## 7. Existing configuration files
 
