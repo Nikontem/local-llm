@@ -106,6 +106,27 @@ def _run_editor(path: Path) -> int:
     return subprocess.call(["vi", str(path)])
 
 
+def scan_line(repo: str) -> None:
+    """Overwrite the one-line "looking at" progress with the repo being examined.
+
+    The line is padded out to the terminal width before the carriage return. Without
+    the padding a short repo name only overwrites its own length, and the tail of the
+    longest name seen so far stays on screen — the two collide into one unreadable
+    string that then survives into whatever is printed next.
+    """
+    if not err.is_terminal:
+        return
+    width = max(err.width - 1, 1)
+    err.print(f"  looking at {repo}"[:width].ljust(width), end="\r")
+
+
+def clear_scan_line() -> None:
+    """Wipe the progress line once the scan is done, so nothing bleeds into the menu."""
+    if not err.is_terminal:
+        return
+    err.print(" " * max(err.width - 1, 1), end="\r")
+
+
 def fail(message: str, code: int = 1) -> NoReturn:
     err.print(message)
     raise typer.Exit(code)
@@ -843,8 +864,8 @@ def recommend(
     preset = _preset_or_none(st)
 
     def progress(repo: str) -> None:
-        if not json_out and err.is_terminal:
-            err.print(f"  looking at {repo}", end="\r")
+        if not json_out:
+            scan_line(repo)
 
     try:
         groups = gather(
@@ -859,6 +880,10 @@ def recommend(
                 " the first run needs the network."
             )
         fail(f"{error}{note}")
+    finally:
+        # Also on the failure path: otherwise the half-written progress line stays on
+        # screen and the error message is printed on top of the repo name.
+        clear_scan_line()
     wanted = [use] if use else list(GROUPS)
     if json_out:
         data = {g: [_candidate_json(c) for c in groups[g]] for g in wanted}
@@ -1454,6 +1479,14 @@ def completion_install_cmd(
         out.print(line)
 
 
+def _recommend_for_setup(hub, machine, preset):
+    """Step 3's scan of the Hub: same progress line as `recommend`, wiped when done."""
+    try:
+        return gather(hub, machine, preset, limit_per_group=3, on_progress=scan_line)
+    finally:
+        clear_scan_line()
+
+
 # ---------------------------------------------------------------- setup
 
 
@@ -1501,13 +1534,7 @@ def setup(
         detect=lambda reserve: _machine(st),
         router=st.router,
         which=_which,
-        recommend=lambda machine, preset, use_: gather(
-            hub, machine, preset, limit_per_group=3,
-            on_progress=(
-                lambda repo: err.print(f"  looking at {repo}", end="\r")
-                if err.is_terminal else None
-            ),
-        ),
+        recommend=lambda machine, preset, use_: _recommend_for_setup(hub, machine, preset),
         search=lambda machine, preset, text: discover_search(
             hub, machine, preset, text=text, limit=10
         ),

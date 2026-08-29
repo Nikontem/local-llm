@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The `looking at <repo>` line that `local-llm recommend` and the setup
+  wizard's model step print while they scan the Hugging Face Hub is now
+  padded to the width of the terminal and wiped when the scan ends. Short
+  repository names used to leave the tail of a longer name behind them, so
+  the two collided into an unreadable string that then stayed on screen
+  underneath whatever was printed next.
+
 - `local-llm claude`/`copilot` and `local-llm load`'s budget estimate now fall
   back to a section's `fit-ctx` when there is no `c` or `ctx-size` to read, so
   a model pulled with only a context floor still gets
