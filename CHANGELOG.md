@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- `local-llm claude`/`copilot` and `local-llm load`'s budget estimate now fall
+  back to a section's `fit-ctx` when there is no `c` or `ctx-size` to read, so
+  a model pulled with only a context floor still gets
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, `COPILOT_PROVIDER_MAX_PROMPT_TOKENS`, and
+  a `load` estimate that is not the model's uncapped trained context. `doctor`
+  now also treats `ctx-size` as `c`'s equivalent in the `context sizing`
+  check, names the model in the `model fit` warning when the router log says
+  which one failed to fit, reads only the log's tail rather than the whole
+  file, and no longer advises turning `c = N` straight into `fit-ctx = N` —
+  that recreates the problem with an unreachable floor — suggesting a modest
+  floor or deleting `c` and re-pulling instead.
 - A newly written `models.ini` section gets `fit-ctx = N`, a floor, instead
   of a fixed `c = N`: `llama-server` now chooses the real context for a
   model when it loads, from whatever memory is actually free at that moment,

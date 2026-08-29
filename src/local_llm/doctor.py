@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import socket
 import subprocess
@@ -268,14 +269,17 @@ def run_checks(
                     "models.ini", "ok", f"{len(preset.sections())} model(s), all files present"
                 ))
 
-            # Sections written before the context floor pin `c`, which stops
-            # llama-server's fitter adjusting anything at all for that model.
-            # Their files are never rewritten without being asked, so the only
-            # thing to do is say so.
-            star_context = preset.items("*").get("c")
+            # Sections written before the context floor pin `c` (or its synonym
+            # `ctx-size`, which llama-server and this tool's own agents.py/cli.py
+            # treat identically), which stops llama-server's fitter adjusting
+            # anything at all for that model. Their files are never rewritten
+            # without being asked, so the only thing to do is say so.
+            star_items = preset.items("*")
+            star_context = star_items.get("c") or star_items.get("ctx-size")
             pinned = [
                 name for name in preset.sections()
                 if preset.get(name, "c", fallback_to_star=False) is not None
+                or preset.get(name, "ctx-size", fallback_to_star=False) is not None
             ]
             if star_context is not None:
                 detail = f"[*] pins c = {star_context} for every model"
@@ -290,8 +294,11 @@ def run_checks(
                     "context sizing", "ok", detail,
                     fix=(
                         "These load at exactly that context and llama.cpp will not adjust"
-                        " them if memory is short. Replace `c = N` with `fit-ctx = N` in"
-                        " models.ini to let the context be chosen at load time."
+                        " them if memory is short. Turning `c = N` straight into"
+                        " `fit-ctx = N` recreates the problem with a floor the machine"
+                        " may not be able to reach, which abandons fitting entirely -"
+                        " use a modest floor instead, e.g. `fit-ctx = 16384`, or delete"
+                        " the `c` line and run `local-llm pull` again."
                     ),
                 ))
         except PresetError as error:
@@ -313,18 +320,41 @@ def run_checks(
     log_path = logs.current_log(paths.log_dir)
     if log_path is not None:
         try:
-            text = log_path.read_text(errors="replace")
+            # A router log can grow large over a long-running session; only the
+            # tail is ever relevant to a check like this one, so read a bounded
+            # number of lines rather than the whole file into memory.
+            tail = logs.tail_lines(log_path, 2000)
         except OSError:
-            text = ""
-        if "failed to fit params" in text:
-            checks.append(Check(
-                "model fit", "warn",
-                "a model loaded without fitting into free memory; it may swap or fail",
-                fix=(
+            tail = []
+        failure_at = next(
+            (i for i, line in enumerate(tail) if "failed to fit params" in line), None
+        )
+        if failure_at is not None:
+            # The router log names the model being loaded on its own line before
+            # any failure; the most recent one before the failure is the model
+            # that failed to fit. Without a name to report, the check falls back
+            # to the old, vaguer wording rather than guessing.
+            model_name = None
+            for line in tail[: failure_at + 1]:
+                match = re.search(r"loading model '([^']+)'", line)
+                if match:
+                    model_name = match.group(1)
+            if model_name:
+                detail = (
+                    f"'{model_name}' loaded without fitting into free memory;"
+                    " it may swap or fail"
+                )
+                fix = (
+                    f"Lower {model_name}'s fit-ctx in models.ini, raise reserve_gb"
+                    " in settings.toml, or use a smaller quantisation."
+                )
+            else:
+                detail = "a model loaded without fitting into free memory; it may swap or fail"
+                fix = (
                     "Lower that model's fit-ctx in models.ini, raise reserve_gb in"
                     " settings.toml, or use a smaller quantisation."
-                ),
-            ))
+                )
+            checks.append(Check("model fit", "warn", detail, fix=fix))
 
     # port
     if not env.port_in_use(settings.host, settings.port):

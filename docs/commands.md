@@ -46,11 +46,14 @@ Every command, with its flags and what it prints. `local-llm --help` and
   coding agents this tool knows about, each failure paired with the command
   that fixes it. Two checks are specific to context sizing:
   - **`context sizing`** — names any section (or the `[*]` wildcard block)
-    still using `c` to pin a fixed context instead of `fit-ctx`. This is
-    informational (`ok`, not a failure): `c` still works, it just means that
-    section never gets the load-time adjustment described in
-    [Memory](configuration.md#memory). The fix text says to replace `c = N`
-    with `fit-ctx = N`.
+    still using `c` or `ctx-size` to pin a fixed context instead of `fit-ctx`.
+    This is informational (`ok`, not a failure): `c` still works, it just
+    means that section never gets the load-time adjustment described in
+    [Memory](configuration.md#memory). The fix text does not say to turn
+    `c = N` straight into `fit-ctx = N` — that recreates the same problem
+    with an unreachable floor, which makes the fitter give up entirely. It
+    suggests a modest floor instead (`fit-ctx = 16384`), or deleting the `c`
+    line and running `local-llm pull` again.
   - **`model fit`** — a warning when the current router log contains
     `failed to fit params to free device memory`, meaning some model loaded
     at its full, unreduced size instead of being adjusted to what was

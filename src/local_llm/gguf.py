@@ -217,6 +217,10 @@ def suggest_context_floor(
     if header is None:
         return MIN_CONTEXT
     reachable = suggest_context(header, weights_bytes, budget, cache_type)
+    # `trained_for` can never be the binding term: suggest_context already caps
+    # `reachable` at header.context_length, and the `or WORKING_MINIMUM` fallback
+    # here is chosen so this term can't be the minimum either. It stays anyway,
+    # to mirror the spec's third cap explicitly rather than relying on a proof.
     trained_for = header.context_length or WORKING_MINIMUM
     return max(MIN_CONTEXT, min(WORKING_MINIMUM, reachable, trained_for))
 
