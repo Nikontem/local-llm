@@ -20,13 +20,13 @@ def test_pull_with_suggestion_writes_a_tuned_section(hubbed):
     keys = preset.items(section)
     assert keys["model"].endswith("Qwen3.8-27B-UD-Q4_K_XL.gguf")
     assert keys["mmproj"].endswith("mmproj-F16.gguf")
-    assert keys["c"] == "131072" and keys["n-predict"] == "32768"
+    assert keys["fit-ctx"] == "16384" and keys["n-predict"] == "32768"
     assert keys["reasoning-format"] == "deepseek"
     assert keys["temp"] == "0.6" and keys["top-p"] == "0.95"
     assert keys["cache-type-k"] == "q8_0"
     text = h.paths.preset.read_text()
     assert "# sampling: model card" in text
-    assert "# context: 131072 suggested for this machine" in text
+    assert "# context: chosen at load time to fit this machine, never below 16384" in text
     assert "local-llm up" in result.output  # router not running
 
 

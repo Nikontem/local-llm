@@ -221,9 +221,10 @@ will cost, so there is no way to tell whether any particular floor is
 reachable, and section 5's governing constraint says an unreachable floor is
 the worst outcome. The floor is therefore `MIN_CONTEXT`, 4096: low enough to
 be reachable on any machine that can load the model at all, which leaves the
-fitter free to choose the real number with the measurements we lack. The
-`FALLBACK_CONTEXT` constant becomes unused in this path and is removed if
-nothing else references it.
+fitter free to choose the real number with the measurements we lack.
+`FALLBACK_CONTEXT` stays in use here: with no header there is nothing to run
+`suggest_context()` on either, so it is still what decides `n-predict` for
+this case.
 
 ## 6. Reporting what actually happened
 
