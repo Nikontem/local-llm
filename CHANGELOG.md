@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The documentation is split up: `README.md` is now a front page, and the
+  reference material it used to carry lives in `docs/setup.md`,
+  `docs/commands.md`, `docs/agents.md`, `docs/configuration.md` and
+  `docs/troubleshooting.md`. No behaviour changed.
 - Coding agents are detected and configured from one list: `local-llm
   integrate` (and step 6 of `setup`) group what is installed by whether it
   gets a provider written into its own config — Codex CLI, opencode — or a
