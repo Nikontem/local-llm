@@ -55,6 +55,22 @@ how much context you ask for — read from the model's GGUF header:
 load unsloth/Qwen3.8-27B-GGUF:Q4_K_XL   ~22.9 GB (weights + KV cache at c=65536)
 ```
 
+A section in `models.ini` sets its context with one of two keys, and they mean
+different things. `fit-ctx = N` is a **floor**, not a fixed number: it tells
+`llama-server` the smallest context it may choose for that model, and the
+server itself picks the real context when the model loads, from whatever
+memory is actually free at that moment — never below the floor, but as high
+above it as the machine allows. This is what `pull` and `add` now write for
+a new section. The practical effect is that **the same model can load with a
+different context on different runs of the router** — a bigger one when the
+machine is idle, a smaller one when something else is using memory. `c = N`
+still works and still means what it always did: it pins the context to
+exactly `N` and switches off that load-time adjustment for the section, at
+the cost of `llama-server` refusing to shrink it if memory is tight. `local-llm
+doctor` names any section still using `c` (see
+[Running the router](commands.md#running-the-router)) so it is easy to find
+and switch over.
+
 `load`'s budget check only guards explicit loads, honestly: a chat request
 naming an unloaded model, or the web UI, bypasses it, and `llama-server`
 evicts resident models by *count* only, never by memory pressure — the

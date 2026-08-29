@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- A newly written `models.ini` section gets `fit-ctx = N`, a floor, instead
+  of a fixed `c = N`: `llama-server` now chooses the real context for a
+  model when it loads, from whatever memory is actually free at that moment,
+  never going below the floor. The same model can therefore load with a
+  different context on different runs — more when the machine is idle, less
+  when it is busy. `pull --context`/`add` still write `c` and pin the
+  context exactly, switching off that adjustment for the section. `doctor`
+  gained a `context sizing` note naming any section still pinned to `c`, and
+  a `model fit` warning when the router log shows a model that loaded
+  without fitting into free memory. `local-llm status` shows the context
+  each resident model actually received.
 - The documentation is split up: `README.md` is now a front page, and the
   reference material it used to carry lives in `docs/setup.md`,
   `docs/commands.md`, `docs/agents.md`, `docs/configuration.md` and
