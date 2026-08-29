@@ -28,6 +28,15 @@ Symptoms you are likely to hit, and what each one usually means.
   models resident at once on a GPU that only has room for one; see
   [Memory](configuration.md#memory). Lower `--max-models` back to 1, or `local-llm unload`
   the one you are not using.
+- **The log says `failed to fit params to free device memory`** —
+  `llama-server`'s own fitter (see [Memory](configuration.md#memory)) could
+  not find a context at or above the section's `fit-ctx` floor that fits in
+  the memory free at that moment, and loaded the model anyway at its full,
+  unreduced context instead of a reduced one — it is likely to swap or fail
+  under load. `local-llm doctor` surfaces this as the `model fit` warning.
+  Fix it with any of: lower that model's `fit-ctx` in `models.ini`, raise
+  `reserve_gb` in `settings.toml` so more memory is left free, or use a
+  smaller quantization of the model.
 - **`llama-server` has no `--models-preset`** — the build is older than
   December 2025, before router-mode presets existed; `brew upgrade
   llama.cpp` on macOS, or rebuild from a current `llama.cpp` tag on Linux.

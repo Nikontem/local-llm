@@ -10,6 +10,7 @@ from local_llm.gguf import (
     read_header,
     refined_estimate,
     suggest_context,
+    suggest_context_floor,
 )
 
 
@@ -135,3 +136,28 @@ def test_refined_estimate_adds_kv_cache():
     sizes = [int(17.2 * GIB)]
     assert refined_estimate(sizes, header, 65536) == estimate_bytes(sizes) + 34816 * 65536
     assert refined_estimate(sizes, None, 65536) == estimate_bytes(sizes)
+
+
+def test_context_floor_is_the_working_minimum_when_the_machine_has_room():
+    # The fitter will choose far more than this at load time; the floor only
+    # says the model is not worth loading below it.
+    assert suggest_context_floor(header_from_kv(QWEN38), int(17.2 * GIB), BUDGET) == 16384
+    assert suggest_context_floor(header_from_kv(CODER), int(16.5 * GIB), BUDGET) == 16384
+
+
+def test_context_floor_drops_to_what_a_small_machine_can_reach():
+    # An unreachable floor is the one bad outcome: the fitter abandons the
+    # attempt entirely and loads at full context.
+    tiny_budget = 2 * GIB
+    assert suggest_context_floor(header_from_kv(QWEN38), int(17.2 * GIB), tiny_budget) == 4096
+
+
+def test_context_floor_never_exceeds_what_the_model_was_trained_for():
+    short = header_from_kv({**SMALL, "qwen2.context_length": 8192})
+    assert suggest_context_floor(short, GIB, BUDGET) == 8192
+
+
+def test_context_floor_without_a_header_is_the_minimum():
+    # No header means no way to estimate the cache cost, so no way to know
+    # whether a higher floor is reachable.
+    assert suggest_context_floor(None, GIB, BUDGET) == 4096

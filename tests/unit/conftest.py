@@ -30,10 +30,15 @@ def harness(tmp_path, monkeypatch):
     paths.config_dir.mkdir(parents=True)
     (tmp_path / "big.gguf").write_bytes(b"x" * 1024)
     (tmp_path / "small.gguf").write_bytes(b"y" * 512)
+    (tmp_path / "floor.gguf").write_bytes(b"z" * 2048)  # bigger than big/small on purpose
     paths.preset.write_text(
         "[*]\nc = 8192\n"
         f"[big]\nmodel = {tmp_path}/big.gguf\nc = 65536\nn-predict = 32768\n"
         f"[small]\nmodel = {tmp_path}/small.gguf\n"
+        # A section written by the context-floor feature: no `c` or `ctx-size` at
+        # all, only the guaranteed-lower-bound `fit-ctx`. Kept alongside the `c`
+        # sections above (never removed) so both shapes stay exercised.
+        f"[floor]\nmodel = {tmp_path}/floor.gguf\nfit-ctx = 16384\n"
     )
     backend = FakeBackend()
     http = FakeHttp({("GET", "/health"): {"status": "ok"}})

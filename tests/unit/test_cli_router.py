@@ -101,6 +101,33 @@ def test_status_when_running(harness):
     assert "small" in result.output and "(asleep)" in result.output
 
 
+def test_status_shows_the_context_each_resident_model_received(harness):
+    h = harness
+    running_router(h, children=[(43, "big", 0)])
+    h.http.responses[("GET", "/models")] = {
+        "data": [
+            {"id": "big", "status": {"value": "ready"}, "meta": {"n_ctx": 40960}},
+        ]
+    }
+    result = h.run("status")
+    assert result.exit_code == 0
+    assert "ctx 40960" in result.output
+
+
+def test_status_prints_no_context_when_the_model_has_no_meta(harness):
+    """`meta` is present only while a model is actually loaded (see the comment in
+    cli.py's `status`). Without it there is no context to report, and the `ctx `
+    label - not just a bare number - must not appear at all."""
+    h = harness
+    running_router(h, children=[(43, "big", 0)])
+    h.http.responses[("GET", "/models")] = {
+        "data": [{"id": "big", "status": {"value": "ready"}}],
+    }
+    result = h.run("status")
+    assert result.exit_code == 0
+    assert "ctx " not in result.output
+
+
 def test_restart_restores_loaded_models(harness):
     h = harness
     running_router(h, ui=True, children=[(43, "big", 0)])
@@ -209,4 +236,4 @@ def test_edit_opens_the_preset(harness):
 
 def test_complete_model_reads_the_preset(harness):
     assert cli.complete_model("b") == ["big"]
-    assert cli.complete_model("") == ["big", "small"]
+    assert cli.complete_model("") == ["big", "small", "floor"]

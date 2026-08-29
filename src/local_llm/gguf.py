@@ -16,6 +16,7 @@ from .estimate import estimate_bytes
 
 MAGIC = b"GGUF"
 MIN_CONTEXT = 4096
+WORKING_MINIMUM = 16384
 MAX_SUGGESTED_CONTEXT = 262144
 _STRING = 8
 _ARRAY = 9
@@ -194,6 +195,34 @@ def suggest_context(
             chosen = context
         context *= 2
     return chosen
+
+
+def suggest_context_floor(
+    header: GgufHeader | None, weights_bytes: int, budget: int, cache_type: str = "q8_0"
+) -> int:
+    """The smallest context worth loading this model at, for llama.cpp's --fit-ctx.
+
+    A floor is not a request. llama-server's fitter picks the real context from
+    the memory free at the moment of loading; the floor only forbids it going
+    lower. The one outcome to avoid is a floor this machine cannot reach: the
+    fitter then abandons the attempt altogether and loads at the full,
+    unreduced context, which is the unsafe state this whole approach exists to
+    remove. So the working minimum is capped twice - by what the machine can
+    actually reach, and by what the model was trained for.
+
+    Without a header there is no way to estimate what the cache will cost, and
+    so no way to tell whether any floor is reachable. The minimum is the only
+    honest answer; the fitter has measurements we lack and can be left to it.
+    """
+    if header is None:
+        return MIN_CONTEXT
+    reachable = suggest_context(header, weights_bytes, budget, cache_type)
+    # `trained_for` can never be the binding term: suggest_context already caps
+    # `reachable` at header.context_length, and the `or WORKING_MINIMUM` fallback
+    # here is chosen so this term can't be the minimum either. It stays anyway,
+    # to mirror the spec's third cap explicitly rather than relying on a proof.
+    trained_for = header.context_length or WORKING_MINIMUM
+    return max(MIN_CONTEXT, min(WORKING_MINIMUM, reachable, trained_for))
 
 
 def refined_estimate(

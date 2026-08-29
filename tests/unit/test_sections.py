@@ -42,13 +42,13 @@ def test_full_section_for_a_big_thinking_vision_model():
     assert plan.name == "unsloth/Qwen3.8-27B-GGUF:Q4_K_XL"
     assert plan.keys == [
         ("model", "/hf/Qwen3.8-27B-UD-Q4_K_XL.gguf"), ("mmproj", "/hf/mmproj-F16.gguf"),
-        ("c", "131072"), ("n-predict", "32768"), ("reasoning-format", "deepseek"),
+        ("fit-ctx", "16384"), ("n-predict", "32768"), ("reasoning-format", "deepseek"),
         ("temp", "1.0"), ("top-k", "20"), ("reasoning-effort", "medium"),
         ("cache-type-k", "q8_0"), ("cache-type-v", "q8_0"),
     ]
     assert plan.comments == [
         "added by local-llm 2026-08-26 from unsloth/Qwen3.8-27B-GGUF (UD-Q4_K_XL, 17.2 GB)",
-        "context: 131072 suggested for this machine (38.0 GB usable)",
+        "context: chosen at load time to fit this machine, never below 16384",
         "sampling: profile qwen3.8",
     ]
 
@@ -61,7 +61,8 @@ def test_small_model_without_kv_quantization_and_short_output():
         sampling=SamplingResult({"temp": "0.7"}, "model card"), today=TODAY,
     )
     keys = dict(plan.keys)
-    assert keys["c"] == "32768" and keys["n-predict"] == "4096"
+    assert keys["fit-ctx"] == "16384" and keys["n-predict"] == "4096"
+    assert "c" not in keys
     assert "cache-type-k" not in keys and "reasoning-format" not in keys and "mmproj" not in keys
     assert keys["temp"] == "0.7"
 
@@ -75,19 +76,20 @@ def test_overrides_no_tuning_and_missing_header():
     )
     keys = dict(plan.keys)
     assert keys["c"] == "65536" and keys["temp"] == "0.2" and keys["top-p"] == "0.9"
-    assert plan.comments[1] == "context: 65536 (given)"
+    assert "fit-ctx" not in keys
+    assert plan.comments[1] == "context: 65536 (given; fixed, not adjusted at load time)"
     bare = build_section(
         name="x", model_path=Path("/m.gguf"), mmproj_path=None, total_bytes=int(18 * GIB),
         header=header_from_kv(QWEN38), machine=MAC,
         sampling=SamplingResult({"temp": "1.0"}, "profile q"),
         no_tuning=True, today=TODAY,
     )
-    assert [k for k, _ in bare.keys] == ["model", "c", "n-predict"]
+    assert [k for k, _ in bare.keys] == ["model", "fit-ctx", "n-predict"]
     assert not any(c.startswith("sampling") for c in bare.comments)
     unreadable = build_section(
         name="x", model_path=Path("/m.gguf"), mmproj_path=None,
         total_bytes=GIB, header=None, machine=MAC,
         sampling=SamplingResult({}, "none"), today=TODAY,
     )
-    assert dict(unreadable.keys)["c"] == "65536"
+    assert dict(unreadable.keys)["fit-ctx"] == "4096"
     assert "GGUF header not readable" in unreadable.comments[1]

@@ -2,6 +2,7 @@ import subprocess
 
 from local_llm.doctor import BREW_INSTALL, Check, Env, port_in_use, run_checks
 from local_llm.hub import TokenStatus
+from local_llm.logs import new_run_log
 from local_llm.paths import Paths
 from local_llm.router import API_KEY_VARIABLE
 from local_llm.settings import Settings
@@ -65,6 +66,113 @@ def test_everything_ok_on_a_healthy_mac(tmp_path):
     assert checks["models.ini"].detail == "1 model(s), all files present"
     assert checks["port"].detail == "5678 is free"
     assert "Claude Code" in checks["agents"].detail
+
+
+def test_doctor_notes_sections_that_still_pin_a_fixed_context(tmp_path):
+    paths = healthy_paths(tmp_path)
+    paths.preset.write_text(
+        f"[*]\njinja = true\n"
+        f"[a/b:Q4]\nmodel = {tmp_path}/m.gguf\nc = 65536\n"
+        f"[c/d:Q4]\nmodel = {tmp_path}/m.gguf\nfit-ctx = 16384\n"
+    )
+    note = by_name(run_checks(paths, Settings(), env=mac_env()))["context sizing"]
+    assert note.status == "ok"
+    assert "a/b:Q4" in note.detail and "c/d:Q4" not in note.detail
+    # Turning `c = 131072` straight into `fit-ctx = 131072` recreates the problem
+    # with an unreachable floor - the fix text must not suggest that literal swap.
+    assert "fit-ctx = 16384" in note.fix
+    assert "Replace `c = N` with `fit-ctx = N`" not in note.fix
+
+
+def test_doctor_names_a_context_pinned_for_every_model_at_once(tmp_path):
+    # A `c` in the wildcard block pins the context for every model, which is a
+    # worse case than one section pinning its own.
+    paths = healthy_paths(tmp_path)
+    paths.preset.write_text(f"[*]\nc = 8192\n[m]\nmodel = {tmp_path}/m.gguf\n")
+    note = by_name(run_checks(paths, Settings(), env=mac_env()))["context sizing"]
+    assert note.status == "ok" and "every model" in note.detail
+    # `m` has no `c` of its own - it only inherits the wildcard's. The detail
+    # must report the wildcard alone, not list `m` as if it pinned context
+    # itself (that per-section listing is driven by `fallback_to_star=False`
+    # in doctor.py; dropping that flag would make every inheriting section
+    # show up here too, and no other assertion in this file would catch it).
+    assert "; also set on" not in note.detail
+    assert note.detail == "[*] pins c = 8192 for every model"
+
+
+def test_doctor_says_nothing_when_no_section_pins_a_context(tmp_path):
+    paths = healthy_paths(tmp_path)
+    paths.preset.write_text(
+        f"[*]\njinja = true\n[c/d:Q4]\nmodel = {tmp_path}/m.gguf\nfit-ctx = 16384\n"
+    )
+    assert "context sizing" not in by_name(run_checks(paths, Settings(), env=mac_env()))
+
+
+def test_doctor_treats_ctx_size_as_equivalent_to_c(tmp_path):
+    """agents.py and cli.py both treat `ctx-size` as `c`'s synonym; the check meant
+    to find pinned contexts must not let a section pinning `ctx-size` escape it."""
+    paths = healthy_paths(tmp_path)
+    paths.preset.write_text(
+        f"[*]\njinja = true\n[a/b:Q4]\nmodel = {tmp_path}/m.gguf\nctx-size = 65536\n"
+    )
+    note = by_name(run_checks(paths, Settings(), env=mac_env()))["context sizing"]
+    assert note.status == "ok"
+    assert "a/b:Q4" in note.detail
+
+
+def test_doctor_reports_a_model_that_failed_to_fit(tmp_path):
+    paths = healthy_paths(tmp_path)
+    log = new_run_log(paths.log_dir)
+    log.write_text(
+        "[51937] I srv load_model: loading model 'a/b:Q4'\n"
+        "[51937] W common_fit_params: failed to fit params to free device memory:"
+        " n_gpu_layers already set by user to -2, abort\n"
+    )
+    check = by_name(run_checks(paths, Settings(), env=mac_env()))["model fit"]
+    assert check.status == "warn"
+    assert "reserve_gb" in (check.fix or "")
+    assert "a/b:Q4" in check.detail and "a/b:Q4" in check.fix
+
+
+def test_doctor_names_the_most_recently_loading_model_before_the_failure(tmp_path):
+    """Two models load in the same log; the failure belongs to whichever one was
+    loading most recently before it, not the first one seen."""
+    paths = healthy_paths(tmp_path)
+    log = new_run_log(paths.log_dir)
+    log.write_text(
+        "[1] I srv load_model: loading model 'a/b:Q4'\n"
+        "[2] I common_fit_params: successfully fit params\n"
+        "[3] I srv load_model: loading model 'c/d:Q8'\n"
+        "[4] W common_fit_params: failed to fit params to free device memory:"
+        " n_gpu_layers already set by user to -2, abort\n"
+    )
+    check = by_name(run_checks(paths, Settings(), env=mac_env()))["model fit"]
+    assert "c/d:Q8" in check.detail
+    assert "a/b:Q4" not in check.detail
+
+
+def test_doctor_falls_back_to_the_old_wording_when_no_model_name_is_found(tmp_path):
+    paths = healthy_paths(tmp_path)
+    log = new_run_log(paths.log_dir)
+    log.write_text(
+        "[51937] W common_fit_params: failed to fit params to free device memory:"
+        " n_gpu_layers already set by user to -2, abort\n"
+    )
+    check = by_name(run_checks(paths, Settings(), env=mac_env()))["model fit"]
+    assert check.status == "warn"
+    assert check.detail == "a model loaded without fitting into free memory; it may swap or fail"
+    assert check.fix == (
+        "Lower that model's fit-ctx in models.ini, raise reserve_gb in"
+        " settings.toml, or use a smaller quantisation."
+    )
+
+
+def test_doctor_is_quiet_when_every_model_fit(tmp_path):
+    paths = healthy_paths(tmp_path)
+    new_run_log(paths.log_dir).write_text(
+        "[51937] I common_fit_params: successfully fit params\n"
+    )
+    assert "model fit" not in by_name(run_checks(paths, Settings(), env=mac_env()))
 
 
 def test_missing_brew_on_mac_is_fatal_and_optional_on_linux(tmp_path):

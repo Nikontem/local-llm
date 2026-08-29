@@ -30,7 +30,12 @@ def resolve_model(model: str | None, preset: Preset, settings: Settings) -> str:
 
 
 def _context(model: str, preset: Preset) -> str | None:
-    return preset.get(model, "c") or preset.get(model, "ctx-size")
+    # `fit-ctx` is a floor, not the context the model will actually load with - but
+    # it is a guaranteed lower bound, which is exactly what a conservative estimate
+    # here wants. Sections the context-floor feature writes have no `c` or
+    # `ctx-size` at all, so without this fallback these variables silently stop
+    # being set the moment a model is (re)pulled.
+    return preset.get(model, "c") or preset.get(model, "ctx-size") or preset.get(model, "fit-ctx")
 
 
 def claude_env(model: str, preset: Preset, settings: Settings) -> dict[str, str]:
