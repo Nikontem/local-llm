@@ -1,0 +1,286 @@
+"""Every coding agent the tool knows: how to spot it, and what configuring it means."""
+
+from __future__ import annotations
+
+import shutil
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from functools import partial
+
+from .integrations import HarnessContext
+from .integrations import codex as codex_integration
+from .integrations import opencode as opencode_integration
+from .settings import Settings
+from .shellrc import alias_name, block_lines, detect_shell, rc_file
+
+PROVIDER = "provider"
+LAUNCHER = "launcher"
+INFORMATIONAL = "informational"
+
+GROUP_TITLES = {
+    PROVIDER: "Configured inside the agent",
+    LAUNCHER: "Launched through local-llm",
+    INFORMATIONAL: "Detected, but cannot use the router",
+}
+
+
+@dataclass(frozen=True)
+class Harness:
+    key: str
+    title: str
+    binary: str
+    kind: str
+    summary: str
+    note: str = ""
+    alias: tuple[str, str] | None = None
+    configure: Callable[[HarnessContext], list[str]] | None = None
+    remove: Callable[[HarnessContext], list[str]] | None = None
+    status: Callable[[HarnessContext], str] | None = None
+
+
+def alias_status(alias: str, ctx: HarnessContext) -> str:
+    """A launcher writes nothing but its shell alias, so that alone is its status.
+
+    "same" when the alias line sits inside our marked block in the shell startup
+    file, "missing" when it does not, "unknown" when the file cannot be read.
+    """
+    rc = rc_file(detect_shell(env=ctx.env), ctx.home)
+    if not rc.is_file():
+        return "missing"
+    try:
+        text = rc.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "unknown"
+    return "same" if alias in {alias_name(line) for line in block_lines(text)} else "missing"
+
+
+GEMINI_NOTE = (
+    "Gemini CLI cannot be pointed at the router: it has no setting for an"
+    " OpenAI-compatible endpoint, and its GOOGLE_GEMINI_BASE_URL variable needs a"
+    " server speaking Google's own request format, which llama-server does not."
+    " Qwen Code continues the same codebase and does run local models:"
+    " local-llm qwen"
+)
+ANTIGRAVITY_NOTE = (
+    "Antigravity CLI is Google's replacement for Gemini CLI. It also takes only a"
+    " Gemini-format endpoint, so it would need a translating server in front of the"
+    " router, which this tool does not ship. To drive a local model from Antigravity,"
+    " its Python SDK supports it officially: pip install google-antigravity, then"
+    " LocalOpenAIAgentConfig(base_url=..., model=...)"
+)
+
+REGISTRY: tuple[Harness, ...] = (
+    Harness(
+        key="codex",
+        title="OpenAI Codex CLI",
+        binary="codex",
+        kind=PROVIDER,
+        summary="~/.codex/config.toml: provider and profile local-llm (experimental)",
+        alias=("codex_local", "codex --profile local-llm"),
+        configure=codex_integration.configure,
+        remove=codex_integration.remove,
+        status=codex_integration.harness_status,
+    ),
+    Harness(
+        key="opencode",
+        title="opencode",
+        binary="opencode",
+        kind=PROVIDER,
+        summary="plugin listing every model, and a tiny helper agent",
+        configure=partial(opencode_integration.configure, agent=True),
+        status=opencode_integration.harness_status,
+    ),
+    Harness(
+        key="claude",
+        title="Claude Code",
+        binary="claude",
+        kind=LAUNCHER,
+        summary="local-llm claude",
+        alias=("claude_local", "local-llm claude"),
+        status=partial(alias_status, "claude_local"),
+    ),
+    Harness(
+        key="copilot",
+        title="GitHub Copilot CLI",
+        binary="copilot",
+        kind=LAUNCHER,
+        summary="local-llm copilot",
+        alias=("copilot_local", "local-llm copilot"),
+        status=partial(alias_status, "copilot_local"),
+    ),
+    Harness(
+        key="aider",
+        title="aider",
+        binary="aider",
+        kind=LAUNCHER,
+        summary="local-llm aider",
+        alias=("aider_local", "local-llm aider"),
+        status=partial(alias_status, "aider_local"),
+    ),
+    Harness(
+        key="qwen",
+        title="Qwen Code",
+        binary="qwen",
+        kind=LAUNCHER,
+        summary="local-llm qwen",
+        alias=("qwen_local", "local-llm qwen"),
+        status=partial(alias_status, "qwen_local"),
+    ),
+    Harness(
+        key="gemini",
+        title="Gemini CLI",
+        binary="gemini",
+        kind=INFORMATIONAL,
+        summary="speaks only Google's own API format, which the router does not serve",
+        note=GEMINI_NOTE,
+    ),
+    Harness(
+        key="antigravity",
+        title="Antigravity CLI",
+        binary="agy",
+        kind=INFORMATIONAL,
+        summary="speaks only Google's own API format, which the router does not serve",
+        note=ANTIGRAVITY_NOTE,
+    ),
+)
+
+
+def find(key: str) -> Harness | None:
+    return next((harness for harness in REGISTRY if harness.key == key), None)
+
+
+def detect(
+    which: Callable[[str], str | None] = shutil.which,
+) -> tuple[list[Harness], list[Harness]]:
+    """(installed, missing), in registry order. Names on PATH only, nothing is run."""
+    installed: list[Harness] = []
+    missing: list[Harness] = []
+    for harness in REGISTRY:
+        (installed if which(harness.binary) else missing).append(harness)
+    return installed, missing
+
+
+def numbered(installed: Sequence[Harness]) -> list[Harness]:
+    """The rows a person can actually choose."""
+    return [h for h in installed if h.kind in (PROVIDER, LAUNCHER)]
+
+
+def note_lines(
+    settings: Settings, installed: Sequence[Harness], rows: Sequence[Harness] | None = None
+) -> list[str]:
+    """The one warning the menu owes a person before it writes another tool's config.
+
+    `rows` is the numbered list when the caller already has it, so one menu render
+    does not work it out several times over.
+    """
+    choices = numbered(installed) if rows is None else rows
+    if settings.is_local or not choices:
+        return []
+    return [
+        "",
+        f"  Note: {settings.host} is not a loopback address, and the base URL is"
+        " plain http. Configuring an agent writes that address into its config file,"
+        " where anything reading that file can see it, and the agent's prompts and the"
+        " code it sends will cross your network unencrypted.",
+    ]
+
+
+def safe_status(harness: Harness, status_of: Callable[[Harness], str]) -> str:
+    """A harness that cannot say how it is configured still gets a row."""
+    if harness.status is None:
+        return ""
+    try:
+        return status_of(harness)
+    except Exception:  # a menu must render whatever the disk is doing
+        return "unknown"
+
+
+#: What each state means for a provider, in words true of a Codex config file and of
+#: an opencode plugin alike: what fails to be read is not always a config file.
+PROVIDER_WORDS = {
+    "same": "configured",
+    "different": "configured, but differs from ours",
+    "unreadable": "what it has configured cannot be read",
+    "unknown": "cannot tell",
+}
+
+
+def _status_note(harness: Harness, state: str) -> str:
+    if harness.kind == PROVIDER:
+        return PROVIDER_WORDS.get(state, "not configured")
+    if harness.kind == LAUNCHER:
+        alias = harness.alias[0] if harness.alias else ""
+        if state == "same":
+            return f"alias {alias} installed"
+        if state == "unknown":
+            return f"alias {alias} — the shell startup file could not be read"
+        return f"alias {alias}"
+    return ""
+
+
+def render(
+    installed: Sequence[Harness],
+    missing: Sequence[Harness],
+    status_of: Callable[[Harness], str],
+    rows: Sequence[Harness] | None = None,
+) -> list[str]:
+    """The whole menu as lines, ready to print. Numbering matches numbered()."""
+    lines: list[str] = []
+    choices = list(numbered(installed) if rows is None else rows)
+    if not installed:
+        lines.append("  No coding agents found on PATH.")
+        lines.append("  local-llm env prints the exports for any other tool.")
+    for kind in (PROVIDER, LAUNCHER, INFORMATIONAL):
+        group = [h for h in installed if h.kind == kind]
+        if not group:
+            continue
+        lines.append("")
+        lines.append(f"  {GROUP_TITLES[kind]}")
+        for harness in group:
+            note = _status_note(harness, status_of(harness))
+            tail = f"   · {note}" if note else ""
+            if kind == INFORMATIONAL:
+                lines.append(f"      {harness.title:<20} {harness.summary}")
+            else:
+                number = choices.index(harness) + 1
+                lines.append(f"   {number}. {harness.title:<20} {harness.summary}{tail}")
+    if missing:
+        lines.append("")
+        lines.append("  Not found: " + ", ".join(h.title for h in missing))
+    return lines
+
+
+def parse_numbers(answer: str, upper: int, also: str = "") -> list[int]:
+    """'1 3' as [1, 3], refusing anything that is not a whole number in 1..upper.
+
+    Every menu in the tool parses its answer through this one function, so a bad
+    answer is refused the same way wherever it is typed. `also` names the other
+    answers the asking menu accepts - one offers "a for all", another "q to quit" -
+    because that part of the message is the only part that differs between them.
+    Repeats are dropped, so "1 1" picks one thing.
+    """
+    problem = f"Pick numbers between 1 and {upper}{also}"
+    tokens = answer.split()
+    if not tokens:
+        raise ValueError(problem)
+    picked: list[int] = []
+    for token in tokens:
+        if not token.isdigit():
+            raise ValueError(problem)
+        number = int(token)
+        if number < 1 or number > upper:
+            raise ValueError(problem)
+        if number not in picked:
+            picked.append(number)
+    return picked
+
+
+def parse_choice(answer: str, rows: Sequence[Harness]) -> list[Harness]:
+    """'1 3' picks two, 'a' picks all, 'n' or empty picks none. Anything else raises."""
+    answer = answer.strip().lower()
+    if answer in ("", "n", "no", "none"):
+        return []
+    if answer in ("a", "all"):
+        return list(rows)
+    numbers = parse_numbers(answer, len(rows), ", a for all, n for none")
+    return [rows[number - 1] for number in numbers]

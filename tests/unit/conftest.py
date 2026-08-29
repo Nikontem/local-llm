@@ -5,7 +5,7 @@ from typer.testing import CliRunner
 
 from local_llm import cli
 from local_llm.paths import Paths
-from local_llm.router import Router
+from local_llm.router import API_KEY_VARIABLE, Router
 
 from .fakes import FakeBackend, FakeHttp
 
@@ -14,6 +14,9 @@ ENV_VARS = (
     "LOCAL_LLM_PORT", "LOCAL_LLM_HOST", "LOCAL_LLM_MAX_MODELS", "LOCAL_LLM_RESERVE_GB",
     "LOCAL_LLM_UI", "LOCAL_LLM_DEFAULT_MODEL", "LOCAL_LLM_ALLOW_REMOTE", "LOCAL_LLM_API_KEY",
     "XDG_CONFIG_HOME", "XDG_STATE_HOME", "EDITOR", "VISUAL",
+    # Another tool's own relocation variables: left set, a test run rewrites the
+    # developer's real Codex config and their real opencode plugin.
+    "CODEX_HOME", "OPENCODE_CONFIG_DIR",
 )
 
 
@@ -37,7 +40,10 @@ def harness(tmp_path, monkeypatch):
     messages: list[str] = []
 
     def make_router(p, s, **kwargs):
+        # A help text naming the variable, so the CLI tests take the path a current
+        # llama.cpp gives people rather than the old-build fallback.
         return Router(p, s, backend=backend, http=http, binary="/opt/bin/llama-server",
+                      help_text=lambda binary: f"--api-key KEY (env: {API_KEY_VARIABLE})",
                       sleep=lambda seconds: None, log=messages.append)
 
     monkeypatch.setattr(cli, "Router", make_router)

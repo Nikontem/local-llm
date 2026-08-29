@@ -6,17 +6,19 @@ Every question goes through an Io object so the whole flow is testable, and
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import harnesses
 from .discover import GROUPS, Candidate
 from .doctor import Check, Env, run_checks
 from .estimate import human_gb
 from .hardware import Machine
+from .harnesses import Harness
 from .hub import Hub, HubError
 from .paths import Paths
-from .preset import Preset, PresetError
+from .preset import Preset, PresetError, smallest_model
 from .quant import QuantError, QuantOption, find_option, quant_options, suggest
 from .router import Router, RouterError
 from .settings import Settings, save_settings
@@ -55,8 +57,9 @@ class SetupContext:
     search: Callable[[Machine, Preset | None, str], list[Candidate]]
     choose_quant: Callable[[list[QuantOption], QuantOption | None, Machine], QuantOption]
     pull: Callable[[Machine, str, QuantOption], str]
-    integrate_shell: Callable[[str], list[str]]
-    integrate_opencode: Callable[[], list[str]]
+    integrate_shell: Callable[[str, Sequence[tuple[str, str]]], list[str]]
+    harness_status: Callable[[Harness], str]
+    configure_harness: Callable[[Harness], list[str]]
     shell: str | None = None  # None: detect from the environment
 
 
@@ -65,18 +68,6 @@ def load_preset(paths: Paths) -> Preset | None:
         return Preset.load(paths.preset)
     except PresetError:
         return None
-
-
-def smallest_model(preset: Preset) -> str | None:
-    sizes: dict[str, int] = {}
-    for name in preset.sections():
-        try:
-            sizes[name] = sum(preset.file_sizes(name))
-        except PresetError:
-            continue
-    if not sizes:
-        return None
-    return min(sizes, key=sizes.get)
 
 
 def _header(io: Io, text: str) -> None:
@@ -318,25 +309,64 @@ def step_settings(ctx: SetupContext, default_model: str) -> Path:
 # ---------------------------------------------------------------- 6. integrations
 
 
+def show_harnesses(io: Io, settings: Settings, installed, missing, status_of, rows=None) -> None:
+    """The grouped menu, plus the one warning it owes a person, printed and nothing more."""
+    rows = harnesses.numbered(installed) if rows is None else rows
+    for line in harnesses.render(
+        installed, missing, lambda h: harnesses.safe_status(h, status_of), rows
+    ):
+        io.say(line)
+    for line in harnesses.note_lines(settings, installed, rows):
+        io.say(line)
+
+
+def choose_harnesses(
+    io: Io, settings: Settings, installed, missing, status_of, rows=None
+) -> list[Harness]:
+    """Print the grouped menu and return what was chosen. --yes takes everything."""
+    rows = harnesses.numbered(installed) if rows is None else rows
+    show_harnesses(io, settings, installed, missing, status_of, rows)
+    if not rows:
+        return []
+    io.say("")
+    while True:
+        answer = io.ask_or_default(
+            "  Numbers to configure (e.g. 1 3), a for all, n for none", "a"
+        )
+        try:
+            return harnesses.parse_choice(answer, rows)
+        except ValueError as error:
+            io.say(f"  {error}")
+
+
 def step_integrations(ctx: SetupContext) -> None:
     io = ctx.io
     _header(io, "6. Shell and coding agents")
     from .shellrc import detect_shell
 
     shell = ctx.shell or detect_shell()
+    installed, missing = harnesses.detect(ctx.which)
+    chosen = choose_harnesses(
+        io, ctx.settings, installed, missing, ctx.harness_status, harnesses.numbered(installed)
+    )
+    for harness in chosen:
+        io.say(f"  {harness.title}")
+        try:
+            lines = ctx.configure_harness(harness)
+        except Exception as error:  # one agent failing never stops the rest
+            lines = [f"could not configure {harness.title}: {error}"]
+        for line in lines:
+            io.say(f"    {line}")
+    for harness in installed:
+        if harness.kind == harnesses.INFORMATIONAL:
+            io.say("")
+            io.say(f"  {harness.title}: {harness.note}")
+    extra = [h.alias for h in chosen if h.alias]
     if io.confirm_or_default(
-        f"Install {shell} completion and the aliases local_llm, claude_local, copilot_local?", True
+        f"Install {shell} completion and the aliases for what you chose?", True
     ):
-        for line in ctx.integrate_shell(shell):
+        for line in ctx.integrate_shell(shell, extra):
             io.say(f"  {line}")
-    if ctx.which("opencode") and io.confirm_or_default(
-        "opencode is installed. Add the local-llm plugin so every model shows up there?", True
-    ):
-        for line in ctx.integrate_opencode():
-            io.say(f"  {line}")
-    for name in ("claude", "copilot"):
-        if ctx.which(name):
-            io.say(f"  {name} found: run it against the router with  local-llm {name} [model]")
 
 
 # ---------------------------------------------------------------- 7. start

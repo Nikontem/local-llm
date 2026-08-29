@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
 
+from local_llm.integrations import HarnessContext
 from local_llm.paths import Paths
 from local_llm.preset import Preset
+from local_llm.settings import Settings
 from local_llm.shellrc import MARK_BEGIN, RETIRED_PREFIX, block_text
 from local_llm.uninstall import (
     KEYS,
@@ -14,6 +16,17 @@ from local_llm.uninstall import (
     remove_state,
     tool_uninstall_hint,
 )
+
+
+def ctx_for(home: Path) -> HarnessContext:
+    """What a registry entry needs to find its own files, pinned to a scratch home."""
+    return HarnessContext(
+        paths=Paths.from_env(env={}, home=home),
+        settings=Settings(),
+        home=home,
+        env={},
+        yes=True,
+    )
 
 
 def populate(home: Path, *, jsonc: bool = False) -> Paths:
@@ -63,6 +76,18 @@ def populate(home: Path, *, jsonc: bool = False) -> Paths:
     (home / ".bash_completions").mkdir()
     (home / ".bash_completions" / "local-llm.sh").write_text("complete")
     (home / ".bashrc").write_text(f"source {home}/.bash_completions/local-llm.sh\nexport B=2\n")
+    codex_dir = home / ".codex"
+    codex_dir.mkdir(parents=True, exist_ok=True)
+    (codex_dir / "config.toml").write_text(
+        'model = "gpt-5"\n\n'
+        "[model_providers.local-llm]\n"
+        'name = "local-llm"\n'
+        'base_url = "http://127.0.0.1:5678/v1"\n'
+        'wire_api = "responses"\n\n'
+        "[profiles.local-llm]\n"
+        'model = "b"\n'
+        'model_provider = "local-llm"\n'
+    )
     return paths
 
 
@@ -115,7 +140,9 @@ def test_delete_model_file_removes_symlink_and_blob(tmp_path):
 def test_remove_integrations_with_and_without_restore(tmp_path):
     paths = populate(tmp_path)
     inv = inventory(paths, home=tmp_path, env={})
-    lines = remove_integrations(inv, restore_retired=True)
+    lines = remove_integrations(
+        inv, ctx_for(tmp_path), restore_retired=True, delete_backups=True
+    )
     assert not (tmp_path / ".config" / "opencode" / "plugins" / "local-llm-models.js").exists()
     config = json.loads((tmp_path / ".config" / "opencode" / "opencode.json").read_text())
     assert "tiny" not in config["agent"] and config["agent"]["other"] == {"mode": "primary"}
@@ -128,7 +155,9 @@ def test_remove_integrations_with_and_without_restore(tmp_path):
     assert not (tmp_path / ".zfunc" / "_local-llm").exists()
     assert not (tmp_path / ".bash_completions" / "local-llm.sh").exists()
     assert any("restored" in line for line in lines)
-    again = remove_integrations(inventory(paths, home=tmp_path, env={}))
+    again = remove_integrations(
+        inventory(paths, home=tmp_path, env={}), ctx_for(tmp_path), delete_backups=True
+    )
     assert again == []
 
 
@@ -136,7 +165,7 @@ def test_remove_integrations_keeps_retired_line_by_default_and_skips_jsonc(tmp_p
     paths = populate(tmp_path, jsonc=True)
     inv = inventory(paths, home=tmp_path, env={})
     assert inv.agent_config and inv.agent_config.name == "opencode.jsonc" and not inv.agent_editable
-    lines = remove_integrations(inv)
+    lines = remove_integrations(inv, ctx_for(tmp_path))
     assert RETIRED_PREFIX in (tmp_path / ".zshrc").read_text()
     assert "// c" in (tmp_path / ".config" / "opencode" / "opencode.jsonc").read_text()
     assert any('remove the "tiny" agent' in line for line in lines)
@@ -217,7 +246,9 @@ def test_restore_only_strips_prefixed_lines(tmp_path):
     paths = populate(tmp_path)
     zshrc = tmp_path / ".zshrc"
     zshrc.write_text(zshrc.read_text() + 'echo "# retired by local-llm: nothing"\n')
-    remove_integrations(inventory(paths, home=tmp_path, env={}), restore_retired=True)
+    remove_integrations(
+        inventory(paths, home=tmp_path, env={}), ctx_for(tmp_path), restore_retired=True
+    )
     text = zshrc.read_text()
     assert 'echo "# retired by local-llm: nothing"' in text
     assert text.count(RETIRED_PREFIX) == 1 and "&& source" in text
@@ -234,8 +265,276 @@ def test_remove_config_also_removes_a_backup_created_after_inventory(tmp_path):
     assert not (paths.config_dir / "models.ini.bak").exists() and not paths.config_dir.exists()
 
 
+def test_a_shell_file_that_is_not_utf8_never_stops_the_uninstall(tmp_path):
+    """It used to raise out of inventory(), before the plan was even printed."""
+    paths = populate(tmp_path)
+    zshrc = tmp_path / ".zshrc"
+    original = zshrc.read_bytes() + "export CAFE=caf\xe9\n".encode("iso-8859-1")
+    zshrc.write_bytes(original)
+
+    inv = inventory(paths, home=tmp_path, env={})
+
+    assert inv.rc_not_utf8 == [zshrc]
+    assert zshrc not in inv.rc_with_block and zshrc not in inv.rc_with_retired
+
+    lines = remove_integrations(inv, ctx_for(tmp_path), restore_retired=True)
+
+    assert zshrc.read_bytes() == original, "the file was touched"
+    assert not (tmp_path / ".zshrc.local-llm.bak").exists(), "nothing was rewritten to back up"
+    assert any("not UTF-8" in line and str(zshrc) in line for line in lines)
+    assert not (tmp_path / ".zfunc" / "_local-llm").exists(), "the rest of the removal still ran"
+    assert (tmp_path / ".bashrc").read_text() == "export B=2\n"
+
+
+def test_a_utf8_shell_file_keeps_its_bytes_through_an_uninstall(tmp_path):
+    """On a machine whose locale is not UTF-8, reading and writing used to disagree."""
+    paths = populate(tmp_path)
+    zshrc = tmp_path / ".zshrc"
+    zshrc.write_bytes("export CAFE=caf\u00e9\n".encode() + zshrc.read_bytes())
+
+    remove_integrations(inventory(paths, home=tmp_path, env={}), ctx_for(tmp_path))
+
+    assert zshrc.read_bytes().startswith("export CAFE=caf\u00e9\n".encode())
+
+
+def test_the_backup_copies_we_own_are_kept_unless_asked_for(tmp_path):
+    """A rewrite leaves one beside every file it touches, and each is the only copy of
+    what that file said before. They go only when the caller says they go."""
+    paths = populate(tmp_path)
+    rc_backup = tmp_path / ".zshrc.local-llm.bak"
+    rc_backup.write_text("an older .zshrc")
+    agent_backup = tmp_path / ".config" / "opencode" / "opencode.json.local-llm.bak"
+    agent_backup.write_text('{"provider": {"anthropic": {"options": {"apiKey": "sk-mine"}}}}')
+
+    inv = inventory(paths, home=tmp_path, env={})
+
+    assert inv.agent_backup == agent_backup and inv.rc_backups == [rc_backup]
+    assert "backup" in inv.summary("integrations")
+
+    kept = remove_integrations(inv, ctx_for(tmp_path))
+
+    assert agent_backup.exists() and rc_backup.exists(), "taken away without being asked"
+    assert any("kept" in line for line in kept)
+    assert any(str(agent_backup) in line for line in kept), "kept, and not named"
+    assert any(str(tmp_path / ".bashrc.local-llm.bak") in line for line in kept)
+
+    lines = remove_integrations(
+        inventory(paths, home=tmp_path, env={}), ctx_for(tmp_path), delete_backups=True
+    )
+
+    assert not agent_backup.exists(), "a second copy of a file that holds API keys"
+    assert not rc_backup.exists()
+    assert any(str(agent_backup) in line for line in lines)
+    assert not (tmp_path / ".bashrc.local-llm.bak").exists(), "the copy this run made stayed"
+    assert inventory(paths, home=tmp_path, env={}).rc_backups == []
+
+
 def test_retired_line_alone_counts_as_nothing_left(tmp_path):
     paths = Paths.from_env(env={}, home=tmp_path)
     (tmp_path / ".zshrc").write_text(f"{RETIRED_PREFIX}source x\n")
     inv = inventory(paths, home=tmp_path, env={})
     assert inv.rc_with_retired and inv.empty
+
+
+def test_inventory_finds_the_codex_tables(tmp_path):
+    populate(tmp_path)
+    inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
+    assert inv.codex_config == tmp_path / ".codex" / "config.toml"
+    assert "Codex" in inv.summary("integrations")
+
+
+def test_remove_integrations_strips_only_our_codex_tables(tmp_path):
+    populate(tmp_path)
+    inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
+    lines = remove_integrations(inv, ctx_for(tmp_path))
+    text = (tmp_path / ".codex" / "config.toml").read_text()
+    assert "local-llm" not in text and 'model = "gpt-5"' in text
+    assert any("model_providers.local-llm" in line for line in lines)
+
+
+def test_an_unparsable_codex_file_is_listed_reported_and_left_byte_identical(tmp_path):
+    """It cannot be edited safely, so it is named and the hand-edit lines are printed."""
+    populate(tmp_path)
+    config = tmp_path / ".codex" / "config.toml"
+    broken = '[model_providers.local-llm]\nname = "local-llm"\n[oops\n'
+    config.write_bytes(broken.encode())
+    inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
+    assert inv.codex_config == config, "a file that names us must reach the plan"
+    assert "Codex" in inv.summary("integrations") and not inv.empty
+
+    lines = remove_integrations(inv, ctx_for(tmp_path))
+    assert any("does not parse" in line and "by hand" in line for line in lines)
+    assert config.read_bytes() == broken.encode(), "the file was touched"
+
+
+def test_a_broken_codex_file_that_is_not_ours_is_never_mentioned(tmp_path):
+    populate(tmp_path)
+    config = tmp_path / ".codex" / "config.toml"
+    config.write_text("[oops\n")
+    inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
+    assert inv.codex_config is None, "nothing of ours is in it"
+    lines = remove_integrations(inv, ctx_for(tmp_path))
+    assert not any("does not parse" in line for line in lines)
+    assert config.read_text() == "[oops\n"
+
+
+def test_removal_goes_through_the_registry_not_a_hardcoded_list(tmp_path):
+    """A provider added to the registry must be removed without editing uninstall.py."""
+    import dataclasses
+
+    from local_llm import harnesses
+
+    populate(tmp_path)
+    called: list[str] = []
+
+    def remove_invented(ctx):
+        called.append(str(ctx.home))
+        return ["removed the invented provider"]
+
+    invented = dataclasses.replace(
+        harnesses.find("codex"), key="invented", title="Invented CLI", remove=remove_invented
+    )
+    inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
+    lines = remove_integrations(inv, ctx_for(tmp_path))
+    assert not any("invented" in line for line in lines)
+
+    monkey = (*harnesses.REGISTRY, invented)
+    import local_llm.uninstall as uninstall_module
+
+    original = uninstall_module.REGISTRY
+    uninstall_module.REGISTRY = monkey
+    try:
+        again = remove_integrations(inv, ctx_for(tmp_path))
+    finally:
+        uninstall_module.REGISTRY = original
+    assert "removed the invented provider" in again
+    assert called == [str(tmp_path)], "the entry was handed the context, not the real home"
+
+
+def test_a_provider_that_raises_never_aborts_the_uninstall(tmp_path):
+    import dataclasses
+
+    import local_llm.uninstall as uninstall_module
+    from local_llm import harnesses
+
+    populate(tmp_path)
+
+    def explode(ctx):
+        raise ValueError("nobody predicted this")
+
+    broken = dataclasses.replace(harnesses.find("codex"), remove=explode)
+    inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})
+    original = uninstall_module.REGISTRY
+    uninstall_module.REGISTRY = tuple(
+        broken if entry.key == "codex" else entry for entry in harnesses.REGISTRY
+    )
+    try:
+        lines = remove_integrations(inv, ctx_for(tmp_path))
+    finally:
+        uninstall_module.REGISTRY = original
+    assert any("could not remove the OpenAI Codex CLI integration" in line for line in lines)
+    assert any("deleted" in line for line in lines), "the rest of the removal still ran"
+
+
+def test_a_tiny_agent_that_is_not_ours_survives_the_uninstall(tmp_path):
+    """configure refuses to replace one; removing it anyway made the two contradict."""
+    paths = populate(tmp_path)
+    config = tmp_path / ".config" / "opencode" / "opencode.json"
+    config.write_text(
+        json.dumps({"agent": {"tiny": {"tools": {"bash": False}, "model": "anthropic/haiku"}}})
+    )
+
+    lines = remove_integrations(inventory(paths, home=tmp_path, env={}), ctx_for(tmp_path))
+
+    still = json.loads(config.read_text())
+    assert still["agent"]["tiny"]["model"] == "anthropic/haiku", "somebody's own agent was deleted"
+    assert any("anthropic/haiku" in line and "left alone" in line for line in lines)
+
+
+def test_the_agent_removal_writes_atomically_and_never_truncates(tmp_path, monkeypatch):
+    """write_text emptied the whole opencode config when the write did not finish."""
+    from local_llm import integrations
+
+    paths = populate(tmp_path)
+    config = tmp_path / ".config" / "opencode" / "opencode.json"
+    original = config.read_text()
+
+    def refuse(source, destination):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(integrations.os, "replace", refuse)
+    lines = remove_integrations(inventory(paths, home=tmp_path, env={}), ctx_for(tmp_path))
+
+    assert config.read_text() == original, "the config was rewritten in place"
+    assert not list(config.parent.glob(".opencode.json.*")), "no temporary file left behind"
+    assert any("could not update" in line and str(config) in line for line in lines)
+
+
+def test_an_opencode_config_that_is_not_utf8_never_stops_the_uninstall(tmp_path):
+    """It used to raise out of inventory(), before the plan was even printed."""
+    paths = populate(tmp_path)
+    config = tmp_path / ".config" / "opencode" / "opencode.json"
+    original = '{"agent": {"tiny": {"model": "llamacpp/b"}}, "note": "caf\xe9"}\n'.encode(
+        "iso-8859-1"
+    )
+    config.write_bytes(original)
+
+    inv = inventory(paths, home=tmp_path, env={})
+
+    assert inv.agent_config is None and inv.tiny_model is None
+
+    lines = remove_integrations(inv, ctx_for(tmp_path), restore_retired=True)
+
+    assert config.read_bytes() == original, "the file was touched"
+    assert any("not UTF-8" in line and str(config) in line for line in lines)
+    assert not (tmp_path / ".zfunc" / "_local-llm").exists(), "the rest of the removal still ran"
+    assert (tmp_path / ".bashrc").read_text() == "export B=2\n"
+
+
+def test_a_file_that_cannot_be_opened_never_stops_the_uninstall(tmp_path):
+    """A --dry-run that cannot even list what it would remove is the worst failure
+    this command has: it used to die with a traceback before printing the plan."""
+    import os
+
+    import pytest
+
+    if os.geteuid() == 0:
+        pytest.skip("root can read a mode-000 file")
+
+    paths = populate(tmp_path)
+    config = tmp_path / ".config" / "opencode" / "opencode.json"
+    zshrc = tmp_path / ".zshrc"
+    config.chmod(0o000)
+    zshrc.chmod(0o000)
+    try:
+        inv = inventory(paths, home=tmp_path, env={})
+
+        assert inv.agent_config is None and zshrc not in inv.rc_with_block
+
+        lines = remove_integrations(inv, ctx_for(tmp_path), restore_retired=True)
+
+        assert any("cannot be read" in line and str(config) in line for line in lines)
+        assert any("cannot be read" in line and str(zshrc) in line for line in lines)
+        assert not (tmp_path / ".zfunc" / "_local-llm").exists(), "the rest still ran"
+        assert (tmp_path / ".bashrc").read_text() == "export B=2\n"
+    finally:
+        config.chmod(0o644)
+        zshrc.chmod(0o644)
+
+
+def test_the_plan_does_not_offer_up_a_tiny_agent_that_is_not_ours(tmp_path):
+    """The plan is what somebody agrees to before anything is deleted, so it must not
+    say a thing will go that removal will then quite rightly leave alone."""
+    paths = populate(tmp_path)
+    config = tmp_path / ".config" / "opencode" / "opencode.json"
+    config.write_text(json.dumps({"agent": {"tiny": {"model": "anthropic/haiku"}}}))
+
+    inv = inventory(paths, home=tmp_path, env={})
+
+    assert inv.tiny_model == "anthropic/haiku" and not inv.tiny_is_ours
+    assert "tiny agent" not in inv.summary("integrations")
+
+    config.write_text(json.dumps({"agent": {"tiny": {"model": "llamacpp/b"}}}))
+    ours = inventory(paths, home=tmp_path, env={})
+
+    assert ours.tiny_is_ours and "tiny agent" in ours.summary("integrations")

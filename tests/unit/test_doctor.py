@@ -3,6 +3,7 @@ import subprocess
 from local_llm.doctor import BREW_INSTALL, Check, Env, port_in_use, run_checks
 from local_llm.hub import TokenStatus
 from local_llm.paths import Paths
+from local_llm.router import API_KEY_VARIABLE
 from local_llm.settings import Settings
 
 
@@ -63,7 +64,7 @@ def test_everything_ok_on_a_healthy_mac(tmp_path):
     assert checks["hf token"].detail == "logged in as nikos"
     assert checks["models.ini"].detail == "1 model(s), all files present"
     assert checks["port"].detail == "5678 is free"
-    assert "claude" in checks["agents"].detail
+    assert "Claude Code" in checks["agents"].detail
 
 
 def test_missing_brew_on_mac_is_fatal_and_optional_on_linux(tmp_path):
@@ -163,3 +164,120 @@ def test_llama_server_that_cannot_run_is_reported_as_such(tmp_path):
     assert "does not run" in checks["llama-server"].detail
     assert "libgomp" in checks["llama-server"].detail
     assert "router support" not in checks
+
+
+def test_agents_check_names_every_harness_in_the_registry(tmp_path):
+    from local_llm.doctor import Env, run_checks
+    from local_llm.paths import Paths
+    from local_llm.settings import Settings
+
+    paths = Paths.from_env(env={}, home=tmp_path)
+    env = Env(
+        system="Darwin",
+        machine="arm64",
+        which=lambda name: "/usr/local/bin/codex" if name == "codex" else None,
+        token_status=lambda: __import__(
+            "local_llm.hub", fromlist=["TokenStatus"]
+        ).TokenStatus("valid", "someone"),
+        port_in_use=lambda host, port: False,
+    )
+    checks = {c.name: c for c in run_checks(paths, Settings(), env=env)}
+    detail = checks["agents"].detail
+    assert "OpenAI Codex CLI" in detail
+    assert "Qwen Code" in detail and "Antigravity CLI" in detail
+
+
+def test_codex_config_check_warns_when_the_address_moved(tmp_path):
+    from local_llm.doctor import Env, run_checks
+    from local_llm.integrations import codex
+    from local_llm.paths import Paths
+    from local_llm.settings import Settings
+
+    paths = Paths.from_env(env={}, home=tmp_path)
+    cx = codex.codex_paths(home=tmp_path, env={})
+    codex.write(cx, codex.provider_table(Settings(port=5678)), None)
+    env = Env(
+        system="Darwin",
+        machine="arm64",
+        which=lambda name: None,
+        token_status=lambda: __import__(
+            "local_llm.hub", fromlist=["TokenStatus"]
+        ).TokenStatus("valid", "someone"),
+        port_in_use=lambda host, port: False,
+        home=tmp_path,
+        environ={},
+    )
+    ok = {c.name: c for c in run_checks(paths, Settings(port=5678), env=env)}
+    assert "codex config" not in ok
+    moved = {c.name: c for c in run_checks(paths, Settings(port=9999), env=env)}
+    assert moved["codex config"].status == "warn"
+    assert "integrate codex" in moved["codex config"].fix
+
+
+def test_agents_check_reports_how_each_provider_is_configured(tmp_path):
+    from local_llm.doctor import Env, run_checks
+    from local_llm.integrations import codex
+    from local_llm.paths import Paths
+    from local_llm.settings import Settings
+
+    paths = Paths.from_env(env={}, home=tmp_path)
+    env = Env(
+        system="Darwin",
+        machine="arm64",
+        which=lambda name: f"/usr/local/bin/{name}" if name in ("codex", "claude") else None,
+        token_status=lambda: TokenStatus("valid", "someone"),
+        port_in_use=lambda host, port: False,
+        home=tmp_path,
+        environ={},
+    )
+    detail = by_name(run_checks(paths, Settings(), env=env))["agents"].detail
+    assert "OpenAI Codex CLI (not configured)" in detail
+    assert "Claude Code" in detail and "Claude Code (" not in detail, "launchers stay plain"
+
+    codex.write(codex.codex_paths(home=tmp_path, env={}), codex.provider_table(Settings()), None)
+    detail = by_name(run_checks(paths, Settings(), env=env))["agents"].detail
+    assert "OpenAI Codex CLI (configured)" in detail
+
+
+def test_doctor_says_which_way_the_api_key_reaches_llama_server(tmp_path):
+    """Whether it goes in the environment or on the command line is not the person's guess."""
+    paths = healthy_paths(tmp_path)
+
+    silent = by_name(run_checks(paths, Settings(), env=mac_env()))
+    assert "api key" not in silent, "there is no key to protect"
+
+    modern = mac_env()
+    modern.run = fake_run({
+        ("/opt/homebrew/bin/llama-server", "--help"):
+            f"... --models-preset PATH ... --api-key KEY (env: {API_KEY_VARIABLE}) ...\n",
+    })
+    good = by_name(run_checks(paths, Settings(api_key="sk-secret"), env=modern))
+    assert good["api key"].status == "ok" and API_KEY_VARIABLE in good["api key"].detail
+
+    old = by_name(run_checks(paths, Settings(api_key="sk-secret"), env=mac_env()))
+    assert old["api key"].status == "warn" and "ps" in old["api key"].detail
+
+
+def test_doctor_names_a_key_put_in_the_wrong_variable(tmp_path):
+    """A router started with LLAMA_API_KEY set asks every request for a key local-llm
+    never sends, and doctor's own success line is what teaches people that name."""
+    env = mac_env()
+    env.environ = {API_KEY_VARIABLE: "sk-in-the-wrong-place"}
+
+    checks = by_name(run_checks(healthy_paths(tmp_path), Settings(), env=env))
+
+    assert checks["api key"].status == "fail"
+    assert "LOCAL_LLM_API_KEY" in checks["api key"].detail
+    assert "LOCAL_LLM_API_KEY" in (checks["api key"].fix or "")
+
+
+def test_doctor_still_speaks_when_the_help_text_cannot_be_read(tmp_path):
+    """That is the run where the key is most exposed, and it used to say nothing."""
+    env = mac_env()
+    env.run = fake_run({})  # every invocation answers with nothing at all
+
+    checks = by_name(run_checks(healthy_paths(tmp_path), Settings(api_key="sk-secret"), env=env))
+
+    assert checks["llama-server"].status == "fail"
+    assert checks["api key"].status == "warn"
+    assert "could not be asked" in checks["api key"].detail

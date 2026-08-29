@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import NoReturn
 
 from .preset import Preset
-from .settings import Settings
+from .settings import ENV_KEYS, Settings
 
 
 class AgentError(Exception):
@@ -38,11 +38,41 @@ def claude_env(model: str, preset: Preset, settings: Settings) -> dict[str, str]
         "ANTHROPIC_BASE_URL": settings.anthropic_base_url,
         "ANTHROPIC_MODEL": model,
         "ANTHROPIC_API_KEY": settings.api_key or "dummy",
+        # Claude Code's background work asks for a Haiku-class model by name; point it
+        # at the same local model or the router is asked for something it has never
+        # heard of. ANTHROPIC_SMALL_FAST_MODEL is the deprecated spelling.
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
+        # These two react to being set at all, whatever the value is. A setup kept
+        # deliberately on this machine has no reason to make optional network calls,
+        # so both the non-essential traffic and the telemetry are turned off.
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "DISABLE_TELEMETRY": "1",
     }
     context = _context(model, preset)
     if context:
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context
     return env
+
+
+def aider_env(settings: Settings) -> dict[str, str]:
+    """aider reads the endpoint from OPENAI_API_BASE; the model carries an openai/ prefix."""
+    return {
+        "OPENAI_API_BASE": settings.openai_base_url,
+        "OPENAI_API_KEY": settings.api_key or "dummy",
+    }
+
+
+def aider_args(model: str, extra: list[str]) -> list[str]:
+    return ["--model", f"openai/{model}", *extra]
+
+
+def qwen_env(model: str, settings: Settings) -> dict[str, str]:
+    """Qwen Code takes the OpenAI-compatible path only when all three are set."""
+    return {
+        "OPENAI_BASE_URL": settings.openai_base_url,
+        "OPENAI_API_KEY": settings.api_key or "dummy",
+        "OPENAI_MODEL": model,
+    }
 
 
 def copilot_env(
@@ -64,9 +94,22 @@ def copilot_env(
     return env
 
 
+#: What these lines say instead of the key itself. The key can only ever have come from
+#: this variable - it is the one setting settings.toml will not hold - so it is already
+#: in the environment of any shell that would run this output, and pointing at it makes
+#: `eval "$(local-llm env)"` work exactly as before.
+KEY_REFERENCE = f'"${ENV_KEYS["api_key"]}"'
+
+
 def export_lines(
     model: str, preset: Preset, settings: Settings, preset_path: Path, shell: str = "zsh"
 ) -> str:
+    """Shell lines pointing any OpenAI- or Anthropic-style tool at the router.
+
+    They are meant to be read by a person and pasted around, so they end up in
+    scrollback, in shell history and in bug reports. No line reproduces the API key's
+    value: where there is one, the variable holding it is named instead.
+    """
     values = {
         "LOCAL_LLM_OPENAI_BASE_URL": settings.openai_base_url,
         "LOCAL_LLM_ANTHROPIC_BASE_URL": settings.anthropic_base_url,
@@ -75,9 +118,19 @@ def export_lines(
         "OPENAI_API_KEY": settings.api_key or "dummy",
         **claude_env(model, preset, settings),
     }
+
+    def written(key: str, value: str) -> str:
+        # Matched on the name as well as the value: with a one-character key, every
+        # other line whose value happened to equal it came out as a reference too.
+        # A quoted reference, not a quoted value: shlex.quote would put single quotes
+        # around it and the shell would hand the tool the variable's name instead.
+        if settings.api_key and key.endswith("API_KEY") and value == settings.api_key:
+            return KEY_REFERENCE
+        return shlex.quote(value)
+
     if shell == "fish":
-        return "".join(f"set -gx {key} {shlex.quote(value)}\n" for key, value in values.items())
-    return "".join(f"export {key}={shlex.quote(value)}\n" for key, value in values.items())
+        return "".join(f"set -gx {key} {written(key, value)}\n" for key, value in values.items())
+    return "".join(f"export {key}={written(key, value)}\n" for key, value in values.items())
 
 
 def exec_with_env(program: str, args: list[str], extra_env: dict[str, str]) -> NoReturn:

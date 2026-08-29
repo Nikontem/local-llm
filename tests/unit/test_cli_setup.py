@@ -55,11 +55,82 @@ def test_completion_install_writes_block_and_retires_old_line(harness):
     assert result.exit_code == 0, result.output
     assert written == ["zsh"]
     text = rc.read_text()
-    assert MARK_BEGIN in text and "alias claude_local='local-llm claude'" in text
+    assert MARK_BEGIN in text and "alias local_llm='local-llm'" in text
     assert RETIRED_PREFIX in text and "retired 1 old line" in result.output
     assert "/fake/_zsh" in result.output
     again = h.run("completion", "install", "--shell", "zsh", "--no-aliases", "--yes")
     assert again.exit_code == 0 and MARK_BEGIN not in rc.read_text()
+
+
+# A shell startup file worth losing: a PATH export, somebody's own alias, and the
+# line that makes pyenv work, under a begin marker whose end marker somebody deleted.
+HALF_MARKED = (
+    'export PATH="$HOME/bin:$PATH"\n'
+    "alias gs='git status'\n"
+    'eval "$(pyenv init -)"\n'
+    f"{MARK_BEGIN}\n"
+)
+
+
+def test_a_half_marked_rc_file_is_left_exactly_as_it_is(harness):
+    """The reviewer's reproduction: a fresh block was appended below the stray marker,
+    and the next removal deleted every line between the two, emptying the file."""
+    h = harness
+    h.monkeypatch.setattr(cli, "install_completion", lambda shell: Path("/fake/_zsh"))
+    rc = h.tmp / ".zshrc"
+    rc.write_text(HALF_MARKED)
+
+    result = h.run("completion", "install", "--shell", "zsh", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert rc.read_text() == HALF_MARKED, "the file was rewritten"
+    assert str(rc) in result.output and "by hand" in result.output
+    assert not (h.tmp / ".zshrc.local-llm.bak").exists(), "nothing was rewritten to back up"
+
+    removing = h.run("completion", "install", "--shell", "zsh", "--no-aliases", "--yes")
+    assert removing.exit_code == 0, removing.output
+    assert rc.read_text() == HALF_MARKED
+    assert "by hand" in removing.output
+
+
+def test_a_shell_file_that_is_not_utf8_is_reported_and_never_rewritten(harness):
+    """Read in the locale's encoding and written back in UTF-8, it would be transcoded."""
+    h = harness
+    h.monkeypatch.setattr(cli, "install_completion", lambda shell: Path("/fake/_zsh"))
+    rc = h.tmp / ".zshrc"
+    original = "export CAFE=caf\xe9\n".encode("iso-8859-1")
+    rc.write_bytes(original)
+
+    result = h.run("completion", "install", "--shell", "zsh", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert rc.read_bytes() == original, "the file was rewritten"
+    assert "not UTF-8" in result.output and str(rc) in result.output
+    assert not (h.tmp / ".zshrc.local-llm.bak").exists(), "nothing was rewritten to back up"
+    # The completion installer appends its own lines to this same file and has no
+    # guards of its own, so a file we refuse to touch is refused to it as well. On
+    # this one it does not merely rewrite the file: it raises while reading it.
+    assert "/fake/_zsh" not in result.output
+    assert "completion was not installed" in result.output
+
+
+def test_the_rc_file_is_copied_aside_before_it_is_rewritten(harness):
+    h = harness
+    h.monkeypatch.setattr(cli, "install_completion", lambda shell: Path("/fake/_zsh"))
+    rc = h.tmp / ".zshrc"
+    original = 'export PATH="$HOME/bin:$PATH"\nalias gs=\'git status\'\n'
+    rc.write_text(original)
+    rc.chmod(0o644)
+
+    result = h.run("completion", "install", "--shell", "zsh", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert MARK_BEGIN in rc.read_text()
+    assert (h.tmp / ".zshrc.local-llm.bak").read_text() == original
+    assert rc.stat().st_mode & 0o777 == 0o644, "the file's own permissions were changed"
+    assert not list(h.tmp.glob(".zshrc.*")) or all(
+        p.name == ".zshrc.local-llm.bak" for p in h.tmp.glob(".zshrc.*")
+    ), "no temporary file left behind"
 
 
 def test_setup_yes_runs_the_wizard(hubbed):
@@ -88,3 +159,32 @@ def test_setup_yes_runs_the_wizard(hubbed):
     assert "Hi there friend" in result.output
     assert (h.tmp / ".config" / "local-llm" / "settings.toml").is_file()
     assert "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q8_0" in h.paths.preset.read_text()
+
+
+def test_setup_detects_agents_through_the_injectable_hook(hubbed):
+    """Step 6 must not read the real executable search path, or the wizard would
+    configure whatever the developer running the tests happens to have installed."""
+    h = hubbed
+    h.monkeypatch.setattr(cli, "_which", lambda binary: None)
+    h.monkeypatch.setattr(cli, "install_completion", lambda shell: Path(f"/fake/_{shell}"))
+    import local_llm.setup as setup_module
+
+    h.monkeypatch.setattr(
+        setup_module,
+        "run_checks",
+        lambda *a, **k: [
+            cli.Check("brew", "ok", "/opt/homebrew/bin/brew"),
+            cli.Check("llama-server", "ok", "/opt/homebrew/bin/llama-server"),
+            cli.Check("hf", "ok", "/opt/homebrew/bin/hf"),
+            cli.Check("hf token", "ok", "logged in as nikos"),
+            cli.Check("router support", "ok", "yes"),
+        ],
+    )
+    h.backend.spawn_listening = {5678}
+    h.http.responses[("POST", "/v1/chat/completions")] = {
+        "choices": [{"message": {"content": "Hi"}}]
+    }
+    result = h.run("setup", "--yes")
+    assert result.exit_code == 0, result.output
+    assert "No coding agents found on PATH." in result.output
+    assert not (h.tmp / ".codex").exists()

@@ -12,15 +12,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .estimate import human_gb
+from .harnesses import PROVIDER, REGISTRY
+from .integrations import HarnessContext, atomic_write, backup_path
+from .integrations.codex import codex_paths, has_tables, unparsable_but_ours
 from .integrations.opencode import (
     CONFIG_CANDIDATES,
     current_tiny_model,
+    foreign_tiny_model,
     is_strict_json,
     opencode_paths,
 )
 from .paths import Paths
 from .preset import Preset, PresetError
-from .shellrc import MARK_BEGIN, RETIRED_PREFIX, rc_file, remove_block
+from .shellrc import (
+    RETIRED_PREFIX,
+    encoding_warning,
+    marker_problem,
+    marker_warning,
+    mentions_block,
+    rc_file,
+    remove_block,
+    unreadable_warning,
+)
 
 KEYS = ("models", "integrations", "state", "config")
 _COMPLETION_FILES = {
@@ -44,11 +57,20 @@ class Inventory:
     plugin: Path | None = None
     agent_config: Path | None = None
     tiny_model: str | None = None
+    tiny_is_ours: bool = False
     agent_editable: bool = False
+    agent_backup: Path | None = None
+    agent_not_utf8: Path | None = None
+    agent_unreadable: tuple[Path, str] | None = None
     completion_files: list[Path] = field(default_factory=list)
     rc_with_block: list[Path] = field(default_factory=list)
     rc_with_retired: list[Path] = field(default_factory=list)
     rc_with_bash_source: list[Path] = field(default_factory=list)
+    rc_not_utf8: list[Path] = field(default_factory=list)
+    rc_unreadable: list[tuple[Path, str]] = field(default_factory=list)
+    rc_backups: list[Path] = field(default_factory=list)
+    codex_config: Path | None = None
+    codex_backup: Path | None = None
     state_dir: Path | None = None
     settings_file: Path | None = None
     preset_files: list[Path] = field(default_factory=list)
@@ -69,12 +91,19 @@ class Inventory:
             parts = []
             if self.plugin:
                 parts.append("opencode plugin")
-            if self.tiny_model:
+            if self.tiny_model and self.tiny_is_ours:
+                # A tiny agent on a model the router does not serve is the person's own
+                # and removal will leave it alone, so the plan must not offer it up. The
+                # plan is what somebody agrees to before anything is deleted.
                 parts.append("opencode tiny agent")
             if self.rc_with_block:
                 parts.append("shell aliases")
             if self.completion_files or self.rc_with_bash_source:
                 parts.append("completion")
+            if self.codex_config:
+                parts.append("Codex provider and profile")
+            if self.agent_backup or self.codex_backup or self.rc_backups:
+                parts.append("the backup copies we made")
             return ", ".join(parts) or "nothing"
         if key == "state":
             parts = []
@@ -136,21 +165,71 @@ def inventory(
     for name in CONFIG_CANDIDATES:
         candidate = oc.config_dir / name
         if candidate.is_file():
-            text = candidate.read_text()
+            try:
+                text = candidate.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # Nothing here can be read, so nothing here can be edited. Reported
+                # rather than skipped in silence, and never put in a list something
+                # rewrites: this used to raise before the plan was even printed, so
+                # every uninstall on this machine died with a traceback.
+                inv.agent_not_utf8 = candidate
+                text = ""
+            except OSError as error:
+                # A permission this user does not have, usually after a stray sudo.
+                # Same rule: reported, never listed for rewriting, never raised.
+                inv.agent_unreadable = (candidate, str(error))
+                text = ""
             model = current_tiny_model(text)
             if model:
                 inv.agent_config, inv.tiny_model = candidate, model
                 inv.agent_editable = is_strict_json(text)
+                inv.tiny_is_ours = foreign_tiny_model(text) is None
+            # Ours by its name alone, whether or not a tiny agent is still in the file.
+            # A config commonly holds the person's own API keys, so a copy of it left
+            # beside the original is a second copy of their secrets.
+            if backup_path(candidate).is_file():
+                inv.agent_backup = backup_path(candidate)
             break
+
+    cx = codex_paths(home=home, env=env)
+    # A config that will not parse never reaches has_tables, which answers False on any
+    # read failure. One that names us is still ours to report: nothing is touched, and
+    # removal prints the lines to delete by hand.
+    if has_tables(cx) or unparsable_but_ours(cx):
+        inv.codex_config = cx.config_file
+    # Ours by its name alone, exactly as the opencode copy is, and found whether or not
+    # our tables are still in the config beside it. Looked for outside the branch above
+    # so that a config we will not touch, or one our tables have already left, does not
+    # leave a copy of somebody's configuration on the disk for good.
+    if cx.backup.is_file():
+        inv.codex_backup = cx.backup
 
     for shell, relative in _COMPLETION_FILES.items():
         completion = home / relative
         if completion.is_file():
             inv.completion_files.append(completion)
         rc = rc_file(shell, home)
+        copy = backup_path(rc)
+        if copy.is_file() and copy not in inv.rc_backups:
+            inv.rc_backups.append(copy)
         if rc.is_file():
-            lines = rc.read_text().splitlines()
-            if any(MARK_BEGIN in line for line in lines) and rc not in inv.rc_with_block:
+            try:
+                content = rc.read_text(encoding="utf-8")
+            except OSError as error:
+                if not any(path == rc for path, _ in inv.rc_unreadable):
+                    inv.rc_unreadable.append((rc, str(error)))
+                continue
+            except UnicodeDecodeError:
+                # Nothing here can be read, so nothing here can be edited. Reported
+                # rather than skipped in silence, and never put in a list something
+                # rewrites: this used to raise before the plan was even printed.
+                if rc not in inv.rc_not_utf8:
+                    inv.rc_not_utf8.append(rc)
+                continue
+            lines = content.splitlines()
+            # Half a block counts here: it cannot be removed, but the person has to be
+            # told it is there rather than have the file passed over in silence.
+            if mentions_block(content) and rc not in inv.rc_with_block:
                 inv.rc_with_block.append(rc)
             if (
                 any(line.startswith(RETIRED_PREFIX) for line in lines)
@@ -215,13 +294,41 @@ def remove_models(paths: Paths, sections: list[str]) -> list[str]:
 
 
 def _remove_agent(config: Path) -> str:
-    data = json.loads(config.read_text() or "{}")
+    """Take our tiny agent back out, and only ours.
+
+    The file is read again here rather than trusted from the inventory, because the
+    person may have edited it since the plan was printed. Every reason not to touch
+    it comes back as one line: this never raises at the caller.
+    """
+    try:
+        text = config.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return encoding_warning(config)
+    except OSError as error:
+        return unreadable_warning(config, str(error))
+    if not is_strict_json(text):
+        return (
+            f'{config} has comments, so it is not rewritten: remove the "tiny" agent'
+            " entry from it by hand"
+        )
+    theirs = foreign_tiny_model(text)
+    if theirs is not None:
+        # A tiny agent on a model the router does not serve is the person's own, very
+        # possibly a paid one. configure refuses to replace it, so removing it here
+        # would make the two halves of the tool contradict each other.
+        return f"the tiny agent in {config} is your own, on {theirs}, so it was left alone"
+    data = json.loads(text or "{}")
     agents = data.get("agent")
     if isinstance(agents, dict) and "tiny" in agents:
         del agents["tiny"]
         if not agents:
             del data["agent"]
-        config.write_text(json.dumps(data, indent=2) + "\n")
+        try:
+            # The rest of this file is the person's own providers, keybindings and
+            # agents. Writing it in place truncates all of that if the write stops.
+            atomic_write(config, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        except OSError as error:
+            return f"could not update {config}: {error}"
         return f"removed the tiny agent from {config}"
     return f"no tiny agent in {config}"
 
@@ -236,7 +343,23 @@ def _restore_retired(text: str) -> str:
     return "".join(restored)
 
 
-def remove_integrations(inv: Inventory, *, restore_retired: bool = False) -> list[str]:
+def remove_integrations(
+    inv: Inventory,
+    context: HarnessContext,
+    *,
+    restore_retired: bool = False,
+    delete_backups: bool = False,
+) -> list[str]:
+    """Undo the integrations in the inventory, plus whatever the registry's providers wrote.
+
+    The context is what each registry entry needs to find its own files, and is
+    required rather than defaulted so nothing can quietly read the real home.
+
+    A .local-llm.bak is a file this tool wrote, but it is also the only copy of what
+    somebody's configuration said before this tool changed it, so whether it goes is
+    the caller's question to have asked. Kept, every one of them is named: a leftover
+    nobody was told about is the hazard, not a leftover.
+    """
     lines: list[str] = []
     if inv.plugin and inv.plugin.exists():
         try:
@@ -244,19 +367,56 @@ def remove_integrations(inv: Inventory, *, restore_retired: bool = False) -> lis
             lines.append(f"deleted {inv.plugin}")
         except OSError as error:
             lines.append(f"could not delete {inv.plugin}: {error}")
+    if inv.agent_not_utf8:
+        lines.append(encoding_warning(inv.agent_not_utf8))
+    if inv.agent_unreadable:
+        lines.append(unreadable_warning(*inv.agent_unreadable))
     if inv.agent_config and inv.tiny_model:
-        if inv.agent_editable:
-            lines.append(_remove_agent(inv.agent_config))
-        else:
-            lines.append(
-                f'{inv.agent_config} has comments, so it is not rewritten: remove the "tiny" agent'
-                " entry from it by hand"
-            )
+        lines.append(_remove_agent(inv.agent_config))
+    # Every provider takes its own integration back out, so adding one to the registry
+    # needs no edit here. Each entry does nothing when the file holds nothing of ours,
+    # which is the same reading that put it in the plan a moment ago.
+    for harness in REGISTRY:
+        if harness.kind != PROVIDER or harness.remove is None:
+            continue
+        try:
+            lines.extend(harness.remove(context))
+        except Exception as error:  # a failed removal never aborts the run
+            lines.append(f"could not remove the {harness.title} integration: {error}")
+    # Ours by name: the ones found a moment ago, and the ones the rewrites below make.
+    backups: set[Path] = {*inv.rc_backups}
+    if inv.agent_backup:
+        backups.add(inv.agent_backup)
+    if inv.agent_config:
+        # The rewrite above makes one whether or not the inventory saw an older copy.
+        backups.add(backup_path(inv.agent_config))
+    if inv.codex_backup:
+        backups.add(inv.codex_backup)
+    if inv.codex_config:
+        # Removing our tables writes a fresh one, which the inventory could not have seen.
+        backups.add(backup_path(inv.codex_config))
     rc_files = {*inv.rc_with_block, *inv.rc_with_bash_source}
     if restore_retired:
         rc_files.update(inv.rc_with_retired)
+    for rc in inv.rc_not_utf8:
+        lines.append(encoding_warning(rc))
+    for rc, problem in inv.rc_unreadable:
+        lines.append(unreadable_warning(rc, problem))
     for rc in sorted(rc_files):
-        text = rc.read_text()
+        try:
+            text = rc.read_text(encoding="utf-8")
+        except UnicodeDecodeError:  # re-saved between the plan and now
+            lines.append(encoding_warning(rc))
+            continue
+        except OSError as error:  # or made unreadable between the plan and now
+            lines.append(unreadable_warning(rc, str(error)))
+            continue
+        problem = marker_problem(text)
+        if problem is not None:
+            # Markers that do not pair up: the end marker our removal would delete up to
+            # belongs to somebody else's lines, so this file is not touched at all.
+            lines.append(marker_warning(rc, problem))
+            continue
         updated = remove_block(text)
         updated = "".join(
             line for line in updated.splitlines(keepends=True) if not _BASH_SOURCE.match(line)
@@ -264,7 +424,12 @@ def remove_integrations(inv: Inventory, *, restore_retired: bool = False) -> lis
         if restore_retired:
             updated = _restore_retired(updated)
         if updated != text:
-            rc.write_text(updated)
+            try:
+                atomic_write(rc, updated)
+            except OSError as error:  # a failed removal never aborts the run
+                lines.append(f"could not update {rc}: {error}")
+                continue
+            backups.add(backup_path(rc))  # the copy that rewrite just made
             what = []
             if rc in inv.rc_with_block:
                 what.append("aliases removed")
@@ -280,6 +445,26 @@ def remove_integrations(inv: Inventory, *, restore_retired: bool = False) -> lis
                 lines.append(f"deleted {completion}")
             except OSError as error:
                 lines.append(f"could not delete {completion}: {error}")
+    # Last, because the rewrites above are what make most of them.
+    ours = [copy for copy in sorted(backups) if copy.exists() or copy.is_symlink()]
+    if not ours:
+        return lines
+    if not delete_backups:
+        lines.append(
+            "kept one backup copy, holding what that file said before local-llm changed"
+            " it. Delete it by hand once you are sure you do not want it:"
+            if len(ours) == 1
+            else f"kept {len(ours)} backup copies, each holding what one of your files said"
+            " before local-llm changed it. Delete them by hand once you are sure:"
+        )
+        lines.extend(f"  {copy}" for copy in ours)
+        return lines
+    for copy in ours:
+        try:
+            copy.unlink()
+            lines.append(f"deleted {copy}")
+        except OSError as error:  # a failed removal never aborts the run
+            lines.append(f"could not delete {copy}: {error}")
     return lines
 
 

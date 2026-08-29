@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-import difflib
 import json
 import os
 import shlex
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
 import webbrowser
+from collections.abc import Sequence
 from dataclasses import asdict
 from importlib import resources
 from pathlib import Path
@@ -19,8 +20,18 @@ from typing import NoReturn
 import typer
 from rich.console import Console
 
-from . import __version__
-from .agents import AgentError, claude_env, copilot_env, exec_with_env, export_lines, resolve_model
+from . import __version__, harnesses
+from .agents import (
+    AgentError,
+    aider_args,
+    aider_env,
+    claude_env,
+    copilot_env,
+    exec_with_env,
+    export_lines,
+    qwen_env,
+    resolve_model,
+)
 from .discover import GROUPS, Candidate, gather
 from .discover import search as discover_search
 from .doctor import Check, Env, run_checks  # noqa: F401 - Check re-exported for tests
@@ -28,16 +39,9 @@ from .estimate import budget_bytes, estimate_bytes, human_gb
 from .gguf import GgufError, read_header, refined_estimate
 from .hardware import Machine, detect, total_ram
 from .hub import Hub, HubCache, HubError, free_disk_bytes, hf_cache_dir
-from .integrations.opencode import (
-    agent_snippet,
-    current_tiny_model,
-    install_plugin,
-    merge_agent,
-    opencode_paths,
-    plugin_source,
-    plugin_status,
-    tiny_agent,
-)
+from .integrations import HarnessContext, atomic_write
+from .integrations import codex as codex_integration
+from .integrations import opencode as opencode_integration
 from .logs import current_log, prune_logs, tail_lines
 from .paths import Paths
 from .preset import Preset, PresetError
@@ -46,14 +50,21 @@ from .router import Router, RouterError
 from .sampling import values_for
 from .sections import build_section, local_name, section_name
 from .settings import load_settings
-from .setup import Io, SetupContext, run_setup, smallest_model
+from .setup import Io, SetupContext, choose_harnesses, run_setup, show_harnesses
 from .shellrc import (
+    TOOL_ALIAS,
     alias_lines,
+    block_lines,
     detect_shell,
+    encoding_warning,
     install_completion,
+    marker_problem,
+    marker_warning,
+    merge_alias_lines,
     rc_file,
     remove_block,
     retire_old_source,
+    shadowed_aliases,
     upsert_block,
 )
 from .uninstall import (
@@ -79,6 +90,7 @@ err = Console(stderr=True, highlight=False, soft_wrap=True, markup=False)
 # Hooks that tests replace.
 _sleep = time.sleep
 _open_url = webbrowser.open
+_which = shutil.which
 
 
 def _interactive() -> bool:
@@ -579,6 +591,46 @@ def copilot(
         fail(str(error))
 
 
+@app.command(context_settings=_PASSTHROUGH)
+def aider(
+    ctx: typer.Context,
+    model: str | None = typer.Argument(
+        None, autocompletion=complete_model, help="Model name; default from settings."
+    ),
+) -> None:
+    """Run aider against the router. Arguments after -- go to aider."""
+    st = state()
+    preset = st.preset()
+    model, extra = _split_agent_args(model, ctx.args)
+    try:
+        name = resolve_model(model, preset, st.settings)
+        env = aider_env(st.settings)
+        out.print(f"aider -> {name} at {st.settings.openai_base_url}")
+        exec_with_env("aider", aider_args(name, extra), env)
+    except AgentError as error:
+        fail(str(error))
+
+
+@app.command(context_settings=_PASSTHROUGH)
+def qwen(
+    ctx: typer.Context,
+    model: str | None = typer.Argument(
+        None, autocompletion=complete_model, help="Model name; default from settings."
+    ),
+) -> None:
+    """Run Qwen Code against the router. Arguments after -- go to qwen."""
+    st = state()
+    preset = st.preset()
+    model, extra = _split_agent_args(model, ctx.args)
+    try:
+        name = resolve_model(model, preset, st.settings)
+        env = qwen_env(name, st.settings)
+        out.print(f"qwen -> {name} at {st.settings.openai_base_url}")
+        exec_with_env("qwen", extra, env)
+    except AgentError as error:
+        fail(str(error))
+
+
 @app.command()
 def env(
     model: str | None = typer.Argument(
@@ -586,7 +638,11 @@ def env(
     ),
     shell: str = typer.Option("zsh", "--shell", help="zsh, bash or fish."),
 ) -> None:
-    """Print export lines that point any OpenAI- or Anthropic-style tool at the router."""
+    """Print export lines that point any OpenAI- or Anthropic-style tool at the router.
+
+    Feed them to your shell with eval. Where an API key is set, the lines name the
+    variable holding it rather than its value, so nothing printed here is the key.
+    """
     st = state()
     preset = st.preset()
     try:
@@ -1087,83 +1143,261 @@ def remove(
 # ---------------------------------------------------------------- integrations
 
 
+def _harness_context(
+    st: State, *, yes: bool, io: Io | None = None, warned_remote: bool = False
+) -> HarnessContext:
+    """Inside the wizard every question goes through its Io; elsewhere, through typer."""
+    return HarnessContext(
+        paths=st.paths,
+        settings=st.settings,
+        preset=_preset_or_none(st),
+        home=Path.home(),
+        env=os.environ,
+        say=out.print if io is None else io.say,
+        confirm=(
+            (lambda prompt, default: typer.confirm(prompt, default=default))
+            if io is None
+            else io.confirm
+        ),
+        yes=yes if io is None else (io.yes or yes),
+        warned_remote=warned_remote,
+    )
+
+
 def _integrate_opencode(st: State, *, agent: bool, yes: bool) -> list[str]:
-    lines: list[str] = []
-    paths = opencode_paths()
-    status = plugin_status(paths)
-    if status == "same":
-        lines.append(f"plugin already installed: {paths.plugin}")
-    else:
-        if status == "different" and not yes:
-            diff = difflib.unified_diff(
-                paths.plugin.read_text().splitlines(), plugin_source().splitlines(),
-                fromfile=str(paths.plugin), tofile="shipped plugin", lineterm="",
-            )
-            out.print("\n".join(diff))
-            if not typer.confirm(f"Replace {paths.plugin} with the shipped plugin?", default=True):
-                lines.append("plugin left as it is")
-            else:
-                install_plugin(paths)
-                lines.append(f"plugin installed: {paths.plugin}")
-        else:
-            install_plugin(paths)
-            lines.append(f"plugin installed: {paths.plugin}")
-    if not agent:
-        return lines
-    preset = _preset_or_none(st)
-    model = smallest_model(preset) if preset else None
-    if not model:
-        lines.append("no model in models.ini yet, so the tiny helper agent was not added")
-        return lines
-    model_id = f"llamacpp/{model}"
-    target = paths.config_file or paths.new_config
-    text = target.read_text() if target.is_file() else ""
-    if current_tiny_model(text) == model_id:
-        lines.append(f"tiny agent already points at {model_id} in {target}")
-        return lines
-    merged = merge_agent(text, tiny_agent(model_id))
-    if merged is None:
-        lines.append(f"{target} has comments, so it is not rewritten. Paste this into it:")
-        lines.append(agent_snippet(tiny_agent(model_id)))
-        return lines
-    if yes or typer.confirm(f"Add the tiny helper agent ({model_id}) to {target}?", default=True):
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(merged)
-        lines.append(f"tiny agent set to {model_id} in {target}")
-    return lines
+    return opencode_integration.configure(_harness_context(st, yes=yes), agent=agent)
 
 
-def _integrate_shell(st: State, shell: str, *, aliases: bool, yes: bool) -> list[str]:
-    lines: list[str] = []
-    completion_path = install_completion(shell)
-    lines.append(f"{shell} completion written to {completion_path}")
+def _integrate_shell(
+    shell: str,
+    *,
+    aliases: bool,
+    yes: bool,
+    extra_aliases: Sequence[tuple[str, str]] = (),
+) -> list[str]:
     rc = rc_file(shell, Path.home())
-    text = rc.read_text() if rc.is_file() else ""
-    updated, retired = retire_old_source(text)
-    updated = upsert_block(updated, alias_lines(shell)) if aliases else remove_block(updated)
-    if updated != text:
-        if yes or typer.confirm(f"Update {rc}?", default=True):
-            rc.parent.mkdir(parents=True, exist_ok=True)
-            rc.write_text(updated)
-            if retired:
-                lines.append(f"retired {retired} old line(s) that sourced local_llm.zsh in {rc}")
-            added_or_removed = "added to" if aliases else "removed from"
-            lines.append(f"aliases local_llm, claude_local, copilot_local {added_or_removed} {rc}")
+    refusal = _rc_refusal(rc)
+    if refusal is not None:
+        # Shell completion goes no further either. typer's installer appends its own
+        # lines to this same rc file, reading and rewriting it with no guard of any
+        # kind, so letting it run would rewrite the very file we have just said we
+        # will not touch - and on a file that is not UTF-8 it raises instead.
+        return [refusal, f"{shell} completion was not installed either: it appends to {rc}"]
+    lines = _alias_block(rc, shell, aliases=aliases, yes=yes, extra_aliases=extra_aliases)
+    # Last, and not first: the installer appends to the rc file, so running it before
+    # the block work above made the output describe a file as it had been a moment ago.
+    try:
+        completion_path = install_completion(shell)
+    except (OSError, UnicodeDecodeError) as error:
+        lines.append(f"could not install {shell} completion: {error}")
+    else:
+        lines.append(f"{shell} completion written to {completion_path}")
     lines.append(f"open a new shell, or run:  source {rc}")
     return lines
 
 
-integrate_app = typer.Typer(help="Wire other tools to the router.", rich_markup_mode=None)
+def _rc_refusal(rc: Path) -> str | None:
+    """The one line to print instead of touching this rc file, or None when it is fit to edit.
+
+    Asked before anything writes, because more than one thing writes: our own marked
+    block, and the shell completion installer, which has no guards of its own.
+    """
+    try:
+        text = rc.read_text(encoding="utf-8") if rc.is_file() else ""
+    except UnicodeDecodeError:
+        return encoding_warning(rc)
+    problem = marker_problem(text)
+    return None if problem is None else marker_warning(rc, problem)
+
+
+def _alias_block(
+    rc: Path,
+    shell: str,
+    *,
+    aliases: bool,
+    yes: bool,
+    extra_aliases: Sequence[tuple[str, str]] = (),
+) -> list[str]:
+    """Put our marked block in the rc file, take it out, or say why neither happened."""
+    lines: list[str] = []
+    try:
+        text = rc.read_text(encoding="utf-8") if rc.is_file() else ""
+    except UnicodeDecodeError:
+        return [encoding_warning(rc)]
+    problem = marker_problem(text)
+    if problem is not None:
+        # Half a marked block means an edit of somebody's went wrong. Adding a second
+        # block below the stray marker is exactly what later empties the whole file.
+        return [marker_warning(rc, problem)]
+    updated, retired = retire_old_source(text)
+    names = [name for name, _ in [TOOL_ALIAS, *extra_aliases]]
+    if aliases:
+        wanted = alias_lines(shell, [TOOL_ALIAS, *extra_aliases])
+        merged = merge_alias_lines(block_lines(updated), wanted)
+        updated = upsert_block(updated, merged)
+    else:
+        updated = remove_block(updated)
+    on_disk = text
+    if updated != text:
+        if yes or typer.confirm(f"Update {rc}?", default=True):
+            try:
+                # A copy first: a shell startup file is a person's own, and this is the
+                # one write in the tool that has no other way back.
+                atomic_write(rc, updated)
+            except OSError as error:
+                lines.append(f"could not update {rc}: {error}")
+                return lines
+            on_disk = updated
+            if retired:
+                lines.append(f"retired {retired} old line(s) that sourced local_llm.zsh in {rc}")
+            if aliases:
+                lines.append(f"aliases {', '.join(names)} added to {rc}")
+            else:
+                lines.append(f"aliases removed from {rc}")
+    if aliases:
+        # A shell takes the last definition it reads, so an alias of the same name
+        # elsewhere in the file leaves one of the two doing nothing, in silence.
+        for name, winner in shadowed_aliases(on_disk, names):
+            lines.append(
+                f"{rc} defines {name} again above our block, so ours wins and that one"
+                " has no effect"
+                if winner == "ours"
+                else f"{rc} defines {name} again below our block, so that one wins and"
+                " the alias here has no effect"
+            )
+    return lines
+
+
+def _help_width() -> int:
+    """How wide the pre-wrapped help paragraphs below may be.
+
+    Click will not reflow a paragraph marked as preformatted, so a fixed width made
+    them spill off the side of a narrow window. This is the one chance to fit them to
+    it, and it is taken as the module loads, which for a command-line tool is a moment
+    before the help is printed.
+    """
+    columns = shutil.get_terminal_size(fallback=(80, 24)).columns
+    return max(40, min(columns - 4, 76))
+
+
+def _help_paragraph(text: str, width: int | None = None) -> str:
+    """Pre-wrap one paragraph so Click keeps names like google-antigravity in one piece.
+
+    A paragraph beginning with the backspace marker is printed as written.
+    """
+    wrapped = textwrap.wrap(
+        text, width=_help_width() if width is None else width, break_on_hyphens=False
+    )
+    return "\b\n" + "\n".join(wrapped)
+
+
+INTEGRATE_HELP = f"""Wire coding agents and other tools to the router.
+
+With no agent named, this shows every agent found on PATH, grouped by whether
+it is configured inside the agent or launched through local-llm, and
+configures the ones you pick.
+
+Codex reads a project-level .codex/config.toml in preference to the one in
+your home directory, so an agent that ignores the local provider inside one
+repository is usually being overridden there.
+
+{_help_paragraph(harnesses.GEMINI_NOTE)}
+
+{_help_paragraph(harnesses.ANTIGRAVITY_NOTE)}
+"""
+
+integrate_app = typer.Typer(
+    help=INTEGRATE_HELP,
+    rich_markup_mode=None,
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
 app.add_typer(integrate_app, name="integrate")
+
+
+@integrate_app.callback()
+def integrate_menu(ctx: typer.Context, yes: bool = typer.Option(
+    False, "-y", "--yes", help="Configure every agent found, without asking."
+)) -> None:
+    """With no agent named, show what is installed and configure what you pick."""
+    # --yes binds to this callback, so `integrate --yes codex` sets it here and never
+    # on the subcommand. Stash it where the subcommand can find it.
+    ctx.obj = {"yes": yes}
+    if ctx.invoked_subcommand is not None:
+        return
+    st = state()
+    installed, missing = harnesses.detect(_which)
+    # The menu below prints the remote-address warning itself, whenever there is
+    # anything to configure, so each chosen agent does not repeat it afterwards.
+    context = _harness_context(st, yes=yes, warned_remote=not st.settings.is_local)
+
+    def status_of(harness: harnesses.Harness) -> str:
+        return harness.status(context) if harness.status else "missing"
+
+    io = Io(
+        say=out.print,
+        ask=lambda prompt, default: typer.prompt(prompt, default=default),
+        confirm=lambda prompt, default: typer.confirm(prompt, default=default),
+        run=lambda cmd: 0,
+        yes=yes or not _interactive(),
+    )
+    rows = harnesses.numbered(installed)
+    chosen: list[harnesses.Harness] = []
+    if rows and yes:
+        show_harnesses(io, st.settings, installed, missing, status_of, rows)
+        chosen = rows
+    elif rows and _interactive():
+        chosen = choose_harnesses(io, st.settings, installed, missing, status_of, rows)
+    else:
+        show_harnesses(io, st.settings, installed, missing, status_of, rows)
+    for harness in chosen:
+        out.print(f"  {harness.title}")
+        try:
+            lines = harness.configure(context) if harness.configure else _launcher_lines(harness)
+        except Exception as error:  # one agent failing never stops the rest of the loop
+            lines = [f"could not configure {harness.title}: {error}"]
+        for line in lines:
+            out.print(f"    {line}")
+    for harness in installed:
+        if harness.kind == harnesses.INFORMATIONAL:
+            out.print("")
+            out.print(f"  {harness.title}: {harness.note}")
+    extra = [h.alias for h in chosen if h.alias]
+    if extra and (yes or _interactive()):
+        shell = detect_shell()
+        for line in _integrate_shell(shell, aliases=True, yes=yes, extra_aliases=extra):
+            out.print(f"  {line}")
+
+
+def _launcher_lines(harness: harnesses.Harness) -> list[str]:
+    """A launcher writes nothing; it only reports how to run it."""
+    alias = f", or the alias {harness.alias[0]}" if harness.alias else ""
+    return [f"run it with:  {harness.summary}{alias}"]
+
+
+def _yes_from(ctx: typer.Context, yes: bool) -> bool:
+    """--yes counts whether it was written before the subcommand name or after it."""
+    return yes or bool((ctx.obj or {}).get("yes"))
+
+
+@integrate_app.command("codex")
+def integrate_codex_cmd(
+    ctx: typer.Context,
+    yes: bool = typer.Option(False, "-y", "--yes", help="Do not ask."),
+) -> None:
+    """Write the local-llm provider and profile into Codex's config.toml."""
+    for line in codex_integration.configure(_harness_context(state(), yes=_yes_from(ctx, yes))):
+        out.print(line)
 
 
 @integrate_app.command("opencode")
 def integrate_opencode_cmd(
+    ctx: typer.Context,
     agent: bool = typer.Option(True, "--agent/--no-agent", help="Also add the tiny helper agent."),
     yes: bool = typer.Option(False, "-y", "--yes", help="Do not ask."),
 ) -> None:
     """Install the opencode plugin that lists every model in models.ini."""
-    for line in _integrate_opencode(state(), agent=agent, yes=yes):
+    for line in _integrate_opencode(state(), agent=agent, yes=_yes_from(ctx, yes)):
         out.print(line)
 
 
@@ -1177,7 +1411,9 @@ def completion_install_cmd(
         None, "--shell", help="zsh, bash or fish (default: detected)."
     ),
     aliases: bool = typer.Option(
-        True, "--aliases/--no-aliases", help="Add local_llm, claude_local, copilot_local."
+        True,
+        "--aliases/--no-aliases",
+        help="Add the local_llm alias and one per configured agent.",
     ),
     yes: bool = typer.Option(False, "-y", "--yes", help="Do not ask."),
 ) -> None:
@@ -1185,7 +1421,7 @@ def completion_install_cmd(
     chosen = shell or detect_shell()
     if chosen not in ("zsh", "bash", "fish"):
         fail(f"--shell must be zsh, bash or fish, got {chosen!r}")
-    for line in _integrate_shell(state(), chosen, aliases=aliases, yes=yes):
+    for line in _integrate_shell(chosen, aliases=aliases, yes=yes):
         out.print(line)
 
 
@@ -1235,7 +1471,7 @@ def setup(
         hub=hub,
         detect=lambda reserve: _machine(st),
         router=st.router,
-        which=shutil.which,
+        which=_which,
         recommend=lambda machine, preset, use_: gather(
             hub, machine, preset, limit_per_group=3,
             on_progress=(
@@ -1250,13 +1486,44 @@ def setup(
             options, suggested, machine, yes=yes
         ),
         pull=do_pull,
-        integrate_shell=lambda shell: _integrate_shell(st, shell, aliases=True, yes=True),
-        integrate_opencode=lambda: _integrate_opencode(st, agent=True, yes=True),
+        integrate_shell=lambda shell, extra=(): _integrate_shell(
+            shell, aliases=True, yes=True, extra_aliases=extra
+        ),
+        harness_status=lambda harness: (
+            harness.status(_harness_context(st, yes=yes, io=io)) if harness.status else "missing"
+        ),
+        configure_harness=lambda harness: (
+            harness.configure(
+                _harness_context(
+                    st, yes=yes, io=io, warned_remote=not st.settings.is_local
+                )
+            )
+            if harness.configure
+            else _launcher_lines(harness)
+        ),
     )
     raise typer.Exit(run_setup(ctx, use=use, models=list(model)))
 
 
 # ---------------------------------------------------------------- uninstall
+
+
+def _delete_backups(chosen: bool | None, *, yes: bool) -> bool:
+    """Whether the .local-llm.bak copies go too, which is never assumed.
+
+    Each one holds what a file of the person's own said before this tool changed it,
+    so it is the one thing an uninstall does not take away on its own reading. Said
+    either way on the command line, the flag decides; otherwise the question is put,
+    and an unattended run keeps them.
+    """
+    if chosen is not None:
+        return chosen
+    if yes:
+        return False
+    return typer.confirm(
+        "Also delete the backup copies local-llm made of your own config files?",
+        default=False,
+    )
 
 
 def _print_plan(inv, chosen: set[str], sections: list[str]) -> None:
@@ -1272,13 +1539,18 @@ def _print_plan(inv, chosen: set[str], sections: list[str]) -> None:
                 for file in entry.files:
                     out.print(f"    {file}")
         elif key == "integrations":
-            candidates = [inv.plugin, inv.agent_config, *inv.completion_files]
-            candidates += [*inv.rc_with_block, *inv.rc_with_bash_source]
+            candidates = [inv.plugin, inv.agent_config, inv.codex_config]
+            candidates += [*inv.completion_files, *inv.rc_with_block, *inv.rc_with_bash_source]
+            copies = [p for p in [inv.agent_backup, inv.codex_backup, *inv.rc_backups] if p]
             for path in candidates:
-                if path:
+                if path and path not in copies:
                     out.print(f"    {path}")
+            for path in copies:
+                out.print(f"    {path}: a copy of that file as it was; you will be asked")
             for rc in inv.rc_with_retired:
                 out.print(f"    {rc}: a retired zsh line (put back only with --restore-shell-line)")
+            for rc in inv.rc_not_utf8:
+                out.print(f"    {rc}: not UTF-8, so it is left alone")
         elif key == "state":
             for path in [inv.state_dir, inv.settings_file]:
                 if path:
@@ -1288,15 +1560,12 @@ def _print_plan(inv, chosen: set[str], sections: list[str]) -> None:
                 out.print(f"    {path}")
 
 
-def _numbers(answer: str, upper: int) -> list[int]:
-    """Parse '1 3' into [1, 3], refusing anything outside 1..upper."""
+def _numbers(answer: str, upper: int, also: str = "") -> list[int]:
+    """The shared menu parser, with this command's way of refusing a bad answer."""
     try:
-        picked = [int(token) for token in answer.split()]
-    except ValueError:
-        fail(f"Pick numbers between 1 and {upper}")
-    if not picked or any(n < 1 or n > upper for n in picked):
-        fail(f"Pick numbers between 1 and {upper}")
-    return picked
+        return harnesses.parse_numbers(answer, upper, also)
+    except ValueError as error:
+        fail(str(error))
 
 
 def _pick_models(inv) -> list[str]:
@@ -1306,7 +1575,8 @@ def _pick_models(inv) -> list[str]:
     answer = typer.prompt("  Numbers to remove (e.g. 1 3), a for all", default="a").strip().lower()
     if answer in ("a", "all"):
         return [entry.section for entry in inv.models]
-    return [inv.models[n - 1].section for n in _numbers(answer, len(inv.models))]
+    numbers = _numbers(answer, len(inv.models), ", a for all")
+    return [inv.models[n - 1].section for n in numbers]
 
 
 @app.command()
@@ -1315,13 +1585,26 @@ def uninstall(
         False, "--models", help="Remove every model section and its files."
     ),
     integrations: bool = typer.Option(
-        False, "--integrations", help="opencode plugin and agent, shell aliases and completion."
+        False,
+        "--integrations",
+        help=(
+            "opencode plugin and agent, the Codex provider and profile, shell aliases"
+            " and completion. The backup copies this tool made are asked about separately."
+        ),
     ),
     state_: bool = typer.Option(False, "--state", help="pid, logs, Hub cache, settings.toml."),
     config: bool = typer.Option(False, "--config", help="models.ini and its backup."),
     all_: bool = typer.Option(False, "--all", help="Everything above."),
     restore_shell_line: bool = typer.Option(
         False, "--restore-shell-line", help="Put back the retired `source local_llm.zsh` line."
+    ),
+    delete_backups: bool | None = typer.Option(
+        None,
+        "--delete-backups/--keep-backups",
+        help=(
+            "Delete the .local-llm.bak copies of your own files, or keep them."
+            " Asked otherwise; kept by default, including under --yes."
+        ),
     ),
     yes: bool = typer.Option(False, "-y", "--yes", help="Do not ask."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Only print what would be removed."),
@@ -1363,7 +1646,7 @@ def uninstall(
             if answer in ("5", "a", "all"):
                 chosen = set(KEYS)
             else:
-                chosen = {KEYS[n - 1] for n in _numbers(answer, 4)}
+                chosen = {KEYS[n - 1] for n in _numbers(answer, 4, ", 5 for everything")}
             if "models" in chosen and inv.models:
                 sections = _pick_models(inv)
     if inv.empty:
@@ -1384,7 +1667,13 @@ def uninstall(
         for line in remove_models(st.paths, sections):
             out.print(f"  {line}")
     if "integrations" in chosen:
-        for line in remove_integrations(inv, restore_retired=restore_shell_line):
+        context = _harness_context(st, yes=True)  # removal asks nothing
+        for line in remove_integrations(
+            inv,
+            context,
+            restore_retired=restore_shell_line,
+            delete_backups=_delete_backups(delete_backups, yes=yes),
+        ):
             out.print(f"  {line}")
     if "state" in chosen:
         for line in remove_state(inv):

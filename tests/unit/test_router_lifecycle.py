@@ -1,19 +1,25 @@
 import pytest
 
 from local_llm.paths import Paths
-from local_llm.router import Router, RouterError
+from local_llm.router import API_KEY_VARIABLE, Router, RouterError
 from local_llm.settings import Settings
 
 from .fakes import FakeBackend
 
+#: What a current llama-server prints for --api-key. A build that has not learned to
+#: read the key from the environment prints the same line without the (env: ...) part.
+MODERN_HELP = f"  --api-key KEY   API key to use for authentication\n(env: {API_KEY_VARIABLE})\n"
+ANCIENT_HELP = "  --api-key KEY   API key to use for authentication\n"
 
-def make(tmp_path, backend, **settings):
+
+def make(tmp_path, backend, help_text=MODERN_HELP, **settings):
     paths = Paths.from_env(env={}, home=tmp_path)
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.preset.write_text("[*]\njinja = true\n[m]\nmodel = /x.gguf\n")
     messages: list[str] = []
     router = Router(paths, Settings(**settings), backend=backend, binary="/opt/bin/llama-server",
-                    sleep=lambda s: None, log=messages.append)
+                    sleep=lambda s: None, log=messages.append,
+                    help_text=lambda binary: help_text)
     return paths, router, messages
 
 
@@ -49,8 +55,8 @@ def test_start_failure_reports_log_tail_and_clears_pidfile(tmp_path):
     paths, router, _ = make(tmp_path, backend)
     original_spawn = backend.spawn
 
-    def spawn_and_log(args, log_path):
-        pid = original_spawn(args, log_path)
+    def spawn_and_log(args, log_path, env=None):
+        pid = original_spawn(args, log_path, env)
         log_path.write_text("error: failed to load preset\n")
         return pid
 
@@ -133,3 +139,61 @@ def test_children_and_loaded_models(tmp_path):
     assert [(k.pid, k.model, k.asleep) for k in kids] == [(43, "big", False), (44, "small", True)]
     assert router.loaded_model_names() == ["big", "small"]
     assert make(tmp_path, FakeBackend())[1].children() == []
+
+
+def test_the_api_key_never_reaches_the_command_line(tmp_path):
+    """`ps` shows every argument of every process to everybody running as this user."""
+    backend = FakeBackend()
+    backend.spawn_listening = {5678}
+    _, router, _ = make(tmp_path, backend, api_key="sk-secret")
+
+    router.start()
+
+    args, _ = backend.spawned[0]
+    assert "--api-key" not in args and "sk-secret" not in args
+    assert backend.spawn_env[0] == {API_KEY_VARIABLE: "sk-secret"}
+
+
+def test_a_build_that_cannot_read_the_variable_still_gets_the_key(tmp_path):
+    """Putting it only in the environment there would start a server with no key at all."""
+    backend = FakeBackend()
+    backend.spawn_listening = {5678}
+    _, router, _ = make(tmp_path, backend, help_text=ANCIENT_HELP, api_key="sk-secret")
+
+    router.start()
+
+    args, _ = backend.spawned[0]
+    assert args[args.index("--api-key") + 1] == "sk-secret"
+    assert backend.spawn_env[0] == {}
+
+
+def test_no_key_configured_adds_nothing_either_way(tmp_path):
+    backend = FakeBackend()
+    backend.spawn_listening = {5678}
+    _, router, _ = make(tmp_path, backend)
+
+    router.start()
+
+    assert "--api-key" not in backend.spawned[0][0] and backend.spawn_env[0] == {}
+    assert backend.spawn_env[0] is not None, "an empty mapping, not no mapping at all"
+
+
+def test_the_binary_is_asked_about_the_variable_once(tmp_path):
+    """It cannot change while this process runs, and asking costs a subprocess each time."""
+    backend = FakeBackend()
+    asked: list[str | None] = []
+    paths = Paths.from_env(env={}, home=tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.preset.write_text("[*]\njinja = true\n[m]\nmodel = /x.gguf\n")
+
+    def record(binary):
+        asked.append(binary)
+        return MODERN_HELP
+
+    router = Router(paths, Settings(api_key="sk-secret"), backend=backend,
+                    binary="/opt/bin/llama-server", sleep=lambda s: None, help_text=record)
+    router.server_args()
+    router.server_env()
+    router.server_args()
+
+    assert asked == ["/opt/bin/llama-server"]
