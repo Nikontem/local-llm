@@ -125,6 +125,30 @@ class Preset:
                 out[line.key] = line.value or ""
         return out
 
+    def comments(self, section: str) -> list[str]:
+        """Every comment belonging to a section, leading and interior, stripped of its marker.
+
+        Needed because `replace_section` regenerates a section's whole body from
+        the keys and comments it is handed, so a caller that rewrites one key
+        must be able to hand back everything else the section had — otherwise a
+        comment the user wrote is destroyed by a command that only meant to
+        change a number.
+
+        Interior comments come back in this list too, which means a caller that
+        feeds the result to `replace_section` re-emits them above the header
+        rather than where they were. Nothing is lost, but a comment written
+        between two keys moves to the top of its section. That is the only shape
+        `replace_section` can express, and losing the text would be worse than
+        moving it.
+        """
+        start, end = self._span(section)
+        lead = self._leading_comment_start(start)
+        found = []
+        for line in self._lines[lead : self._content_end(start, end)]:
+            if line.kind == "comment":
+                found.append(line.raw.lstrip("#;").strip())
+        return found
+
     def get(self, section: str, key: str, fallback_to_star: bool = True) -> str | None:
         own = self.items(section)
         if key in own:

@@ -1,7 +1,15 @@
-from local_llm.tuning import Candidate, Measurement, Profile, turn_time
+from local_llm.preset import Preset
+from local_llm.tuning import BASELINE, Candidate, Measurement, Profile, turn_time
+from local_llm.tuning import report as report_module
 
 AGENT = Profile(depth=4096, prompt=4096, generate=256)
 BASE = Candidate(batch=2048, ubatch=512, flash_attn="auto", cache_type="f16", label="baseline")
+FAST = Candidate(batch=4096, ubatch=1024, flash_attn="auto", cache_type="f16",
+                 label="batch 4096/1024")
+
+
+def _measured(candidate, prompt_rate, generation_rate):
+    return Measurement(candidate, prompt_rate, generation_rate, repetitions=3)
 
 
 def test_turn_time_is_prompt_plus_generation():
@@ -27,3 +35,92 @@ def test_a_candidate_names_the_preset_keys_it_implies():
         ("cache-type-k", "q8_0"),
         ("cache-type-v", "q8_0"),
     ]
+
+
+def test_a_section_reports_every_comment_it_owns():
+    preset = Preset.parse(
+        "# added by local-llm\n"
+        "# context chosen at load time\n"
+        "[m]\n"
+        "model = /tmp/m.gguf\n"
+        "# hand-written note from the user\n"
+        "b = 2048\n"
+    )
+    assert preset.comments("m") == [
+        "added by local-llm",
+        "context chosen at load time",
+        "hand-written note from the user",
+    ]
+
+
+def test_a_hand_written_comment_survives_a_rewrite_by_moving_above_the_header():
+    preset = Preset.parse("[m]\nmodel = /tmp/m.gguf\n# keep me\nb = 2048\n")
+    preset.replace_section("m", [("model", "/tmp/m.gguf"), ("b", "4096")], preset.comments("m"))
+    text = preset.dump()
+    assert "# keep me" in text
+    assert text.index("# keep me") < text.index("[m]")
+
+
+def test_ranking_puts_the_shortest_turn_first_and_failures_last():
+    slow = _measured(BASE, 400.0, 30.0)
+    fast = _measured(FAST, 800.0, 30.0)
+    broken = Measurement(FAST, 0.0, 0.0, repetitions=0, error="did not start")
+    ordered = report_module.rank([slow, broken, fast], AGENT)
+    assert [m.candidate.label for m in ordered] == [FAST.label, BASELINE, FAST.label]
+    assert ordered[-1].error == "did not start"
+    assert report_module.winner([slow, broken, fast], AGENT).candidate is FAST
+
+
+def test_there_is_no_winner_when_everything_failed():
+    broken = Measurement(BASE, 0.0, 0.0, repetitions=0, error="did not start")
+    assert report_module.winner([broken], AGENT) is None
+
+
+def test_the_table_names_the_baseline_and_the_change_against_it():
+    rows = report_module.table([_measured(BASE, 400.0, 30.0), _measured(FAST, 800.0, 30.0)], AGENT)
+    assert any(BASELINE in row and "b=2048" in row for row in rows)
+    faster = [row for row in rows if FAST.label in row][0]
+    assert "-" in faster and "%" in faster
+
+
+def test_a_failed_row_says_so_instead_of_printing_a_rate():
+    broken = Measurement(FAST, 0.0, 0.0, repetitions=0, error="did not start")
+    rows = report_module.table([_measured(BASE, 400.0, 30.0), broken], AGENT)
+    assert any("did not start" in row for row in rows)
+
+
+def test_only_keys_that_differ_from_the_effective_value_are_written():
+    # flash-attn = auto comes from [*]; writing it into the section would add a
+    # line that changes nothing.
+    preset = Preset.parse(
+        "[*]\nflash-attn = auto\n\n[m]\nmodel = /tmp/m.gguf\nb = 2048\nub = 512\n"
+    )
+    changes = report_module.changed_keys(FAST, preset, "m")
+    assert changes == [("b", "4096"), ("ub", "1024"), ("cache-type-k", "f16"),
+                       ("cache-type-v", "f16")]
+
+
+def test_a_winner_identical_to_the_file_implies_no_changes():
+    preset = Preset.parse(
+        "[m]\nmodel = /tmp/m.gguf\nb = 2048\nub = 512\nflash-attn = auto\n"
+        "cache-type-k = f16\ncache-type-v = f16\n"
+    )
+    assert report_module.changed_keys(BASE, preset, "m") == []
+
+
+def test_merging_keeps_the_keys_the_section_already_had():
+    preset = Preset.parse("[m]\nmodel = /tmp/m.gguf\nfit-ctx = 16384\nb = 2048\n")
+    merged = report_module.merged_keys(preset, "m", [("b", "4096"), ("ub", "1024")])
+    assert merged[0] == ("model", "/tmp/m.gguf")
+    assert ("fit-ctx", "16384") in merged
+    assert ("b", "4096") in merged and ("b", "2048") not in merged
+    assert ("ub", "1024") in merged
+
+
+def test_the_json_shape_carries_the_rates_and_the_derived_turn():
+    payload = report_module.as_json([_measured(BASE, 400.0, 30.0)], AGENT)
+    assert payload[0]["label"] == BASELINE
+    assert payload[0]["batch"] == 2048
+    assert payload[0]["prompt_rate"] == 400.0
+    assert payload[0]["generation_rate"] == 30.0
+    assert round(payload[0]["turn_seconds"], 3) == round(4096 / 400.0 + 256 / 30.0, 3)
