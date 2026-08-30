@@ -134,6 +134,49 @@ only when you know two configured models together fit the budget.
   `n-predict`, skipping sampling values.
 - **`local-llm add PATH [--mmproj PATH] [--name NAME]`** — the same tuning
   and section-writing as `pull`, for a GGUF file you already have on disk.
+- **`local-llm tune <model> [--engine bench|server] [--repetitions N] [--json]
+  [-y]`** — measure how fast a model actually answers on this machine, and offer
+  to keep the settings that answered fastest. Everything else `local-llm` writes
+  is estimated from the model file and your memory; this is the one command that
+  runs the model and times it. It measures four settings — the batch size and
+  micro-batch size, whether flash attention is used, and whether the key-value
+  cache is stored at full or reduced precision — against a workload shaped like a
+  coding agent's: four thousand tokens already in the conversation, four thousand
+  more sent, and a short reply. Each setting is measured on its own against your
+  current configuration, so a combination of two changes is never tried. Expect
+  ten to twenty minutes on a large model. If the router is holding a model it is
+  unloaded for the duration and reloaded afterwards, because a second copy of a
+  model in memory makes every number meaningless. Nothing is written to
+  `models.ini` until you say so. `--engine` picks `llama-bench` (the default,
+  faster) or a real `llama-server` request; `--repetitions` controls how many
+  times each setting is measured (default 3); without `-y` and without a
+  terminal to ask in, it prints what it would write and changes nothing. It does
+  not touch the number of GPU layers or the context size — those are decided
+  elsewhere (see [Memory](configuration.md#memory)), because this command tunes
+  speed, not fit. Output from a 1 GB model:
+
+  ```
+  measuring Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M with bench, 5 settings, 2 runs each
+    measuring baseline
+    measuring batch 1024/256
+    measuring batch 4096/1024
+    measuring flash-attn off
+    measuring cache q8_0
+
+    batch 4096/1024   b=4096 ub=1024 fa=auto cache=f16                1594 pp/s   158.3 tg/s     4.2 s  -2%
+    baseline          b=2048 ub=512 fa=auto cache=f16                 1556 pp/s   157.4 tg/s     4.3 s
+    batch 1024/256    b=1024 ub=256 fa=auto cache=f16                 1514 pp/s   157.0 tg/s     4.3 s  +2%
+    cache q8_0        b=2048 ub=512 fa=auto cache=q8_0                1551 pp/s   141.2 tg/s     4.5 s  +5%
+    flash-attn off    b=2048 ub=512 fa=off cache=f16                  1347 pp/s   108.9 tg/s     5.4 s  +27%
+
+    Each setting was measured against the baseline on its own. Combinations of two changed settings were not tried.
+
+  fastest: batch 4096/1024
+    b = 4096
+    ub = 1024
+
+  Re-run with --yes to write these into [Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M].
+  ```
 - **`local-llm remove NAME [--delete-files]`** — removes a section, and with
   the flag, the model file(s) it points at, after listing them and asking.
 - **`local-llm edit`** — opens `models.ini` in `$EDITOR` directly; everything

@@ -40,6 +40,26 @@ Symptoms you are likely to hit, and what each one usually means.
 - **`llama-server` has no `--models-preset`** — the build is older than
   December 2025, before router-mode presets existed; `brew upgrade
   llama.cpp` on macOS, or rebuild from a current `llama.cpp` tag on Linux.
+- **`tune` reports numbers far slower than expected** — it measures whatever
+  the GPU actually delivers at that moment, and something else on the
+  machine competing for it (another app, a second model still loaded, even
+  a browser tab doing GPU work) will show up as a slow run with no error.
+  Close other GPU users and run it again; `local-llm status` shows whether
+  the router itself is holding a second model.
+- **A candidate in `tune`'s table shows an error instead of a rate** — most
+  often the `q8_0` cache-type candidate, because a quantized key-value cache
+  can still need more memory than is free at that moment on top of whatever
+  the baseline used. It is not a bug in the measurement; it means that
+  candidate does not fit right now. Free up memory (see
+  [Memory](configuration.md#memory)) and try again, or accept that this
+  machine cannot use that setting for this model.
+- **`tune` refuses to start, saying the model needs more than this machine
+  has usable** — the workload it measures against (four thousand tokens of
+  history, four thousand more, and a reply) needs its own memory on top of
+  the model's weights, and this machine does not have enough free right now
+  to hold both without swapping. `local-llm doctor` shows what else is using
+  memory; freeing it, lowering `reserve_gb`, or using a smaller quantization
+  are the ways out.
 - **A coding agent still talks to the real Anthropic/OpenAI API** — it was
   started without going through `local-llm claude` / `local-llm copilot` /
   `local-llm env`, so it never got the `*_BASE_URL` variables.

@@ -75,3 +75,23 @@ and switch over.
 naming an unloaded model, or the web UI, bypasses it, and `llama-server`
 evicts resident models by *count* only, never by memory pressure — the
 reason `--max-models` defaults to 1 (see [Running the router](commands.md#running-the-router)).
+
+## Speed
+
+Four keys in a section affect how fast a model answers, never whether it
+fits — that is still decided by `fit-ctx`/`c` and the machine's memory
+budget, above. `local-llm` leaves `b` (batch size) and `ub` (micro-batch
+size, always at most `b`) at `llama-server`'s own defaults unless
+[`tune`](commands.md#models) has written measured values for them.
+`flash-attn` turns flash attention on or off; left unset, `llama-server`
+decides for itself. `cache-type-k` and `cache-type-v` set the precision the
+key-value cache is stored at — `f16` (full precision, the implicit default)
+or a quantized type such as `q8_0` (roughly half the memory, some models
+handle it better than others). For a model big enough that its full KV
+cache would be expensive, `pull` and `add` already set both to `q8_0` as an
+estimate, before `tune` ever runs. Whichever of these four keys `tune` has
+written, the comment above the section names the measurement they came
+from: a value it wrote was timed on the machine it ran on. It is safe to
+carry to another machine — the fitter still governs what actually fits —
+but it was never measured there, so it is not guaranteed to still be the
+fastest choice.

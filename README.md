@@ -36,9 +36,11 @@ Homebrew question, the upgrade path, and the seven setup steps in detail.
 ## What `setup` does to your machine
 
 It checks prerequisites, measures your machine and turns that into a memory budget,
-suggests models that fit and downloads the ones you pick, writes a tuned section for each
-into `models.ini`, offers to wire up whichever coding agents it finds installed, and starts
-the router. Nothing is downloaded or overwritten without asking, and the wizard can be
+suggests models that fit and downloads the ones you pick, writes a section for each into
+`models.ini` with context and sampling values estimated from the model file (`local-llm
+tune` later replaces that with settings actually measured on your machine, if you want
+faster), offers to wire up whichever coding agents it finds installed, and starts the
+router. Nothing is downloaded or overwritten without asking, and the wizard can be
 re-run at any time — each step detects what is already done and skips it.
 
 <img src="demo/clips/setup_search.gif" alt="local-llm setup picking and downloading a model" width="700">

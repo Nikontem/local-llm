@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- New command: `local-llm tune <model>` runs a model against a workload
+  shaped like a coding agent's traffic and times it, varying batch size,
+  micro-batch size, flash attention, and key-value cache precision one at a
+  time against the model's current settings — everything else `local-llm`
+  writes into `models.ini` is estimated, never measured. It unloads and
+  reloads a model the router is already holding so a second copy in memory
+  cannot skew the numbers, and writes nothing to `models.ini` unless you say
+  so.
+
 - The `looking at <repo>` line that `local-llm recommend` and the setup
   wizard's model step print while they scan the Hugging Face Hub is now
   padded to the width of the terminal and wiped when the scan ends. Short
