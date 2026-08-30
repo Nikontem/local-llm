@@ -84,6 +84,23 @@ only when you know two configured models together fit the budget.
 
 ## Models
 
+- **`local-llm browse-models [--use coding|general|small|vision]
+  [--include-finetunes] [--limit N] [--refresh]`** — setup step 3 on its own:
+  the numbered table of what fits this machine, a prompt that takes **several
+  numbers at once** (`1 3` downloads two models), and `s <text>` to search
+  Hugging Face without leaving the menu. Search results join the numbering
+  rather than replacing it, so a model from the first listing is still
+  pickable by the number it was given there. Each pick asks for its
+  quantization, with the one suggested for this machine as the default, and is
+  then downloaded and written into `models.ini` as its own tuned section — the
+  same work `pull` does, once per pick. A model already in `models.ini` is
+  named and skipped, not downloaded again, and a repository the Hub will not
+  serve — gated, unreachable, or too large for the disk — is reported and the
+  run goes on to the rest of the picks, naming what it could not add and
+  exiting non-zero at the end. Nothing is
+  written to `settings.toml`: the default model stays whatever setup left it.
+  It is a menu and needs a terminal, so it refuses to run in a pipe or a
+  script and points at `recommend --json` and `pull` instead.
 - **`local-llm recommend [--use coding|general|small|vision]
   [--include-finetunes] [--pick]`** — the same table as setup step 3, on
   demand. "Computed from this machine" means every number reflects your RAM,

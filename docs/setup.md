@@ -77,7 +77,9 @@ small
 The quantization suggested scales with the machine — small models get the
 high-precision `Q8_0`, the 27–30B ones get `UD-Q4_K_XL` on a 38 GB budget.
 Type numbers to download (`1 3`), `s <text>` to search for something else, or
-`n` for nothing.
+`n` for nothing. This same menu is available on its own afterwards as
+[`local-llm browse-models`](commands.md#models), so adding a model later does
+not mean running the wizard again.
 
 **4. Download and configure** — downloads what was picked and writes a tuned
 section for each into `models.ini` (see [Commands](commands.md#models)).
@@ -105,5 +107,5 @@ smallest configured model, then prints the endpoints:
 ```
 
 If no models are configured yet — a bare `--yes` run, or nothing chosen in
-step 3 — setup stops after step 6 and points at `local-llm recommend` and
+step 3 — setup stops after step 6 and points at `local-llm browse-models` and
 `local-llm pull` instead of starting a router with nothing to serve.

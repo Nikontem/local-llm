@@ -88,11 +88,13 @@ One line each; flags, options and output samples are in
 | `models` | Lists every model in `models.ini` with its size on disk. |
 | `load` | Preloads one or more models. |
 | `unload` | Releases a model immediately. |
+| `browse-models` | Menu of what fits this machine: pick several, search the Hub, download them. |
 | `recommend` | Suggests models that fit this machine. |
 | `search` | Free-text search of GGUF repositories on Hugging Face. |
 | `pull` | Downloads a model and writes a tuned config section. |
 | `add` | Registers a GGUF file you already have on disk. |
 | `remove` | Removes a model's config section, and optionally its files. |
+| `tune` | Measures a model on this machine and offers the settings that won. |
 | `edit` | Opens `models.ini` in `$EDITOR`. |
 
 **Coding agents**

@@ -160,7 +160,8 @@ def test_yes_without_models_skips_downloads_and_start(tmp_path):
     ctx = make_ctx(tmp_path, script, yes=True)
     assert run_setup(ctx) == 0
     assert ctx.pulled == [] and not ctx.backend.spawned
-    assert "No models configured yet" in script.text() and "local-llm recommend" in script.text()
+    assert "No models configured yet" in script.text()
+    assert "local-llm browse-models" in script.text(), "the way back into the model menu"
     assert ctx.paths.settings_file.is_file()
 
 

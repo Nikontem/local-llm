@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import harnesses
-from .discover import GROUPS, Candidate
+from .browse import BrowseContext, pick_models
+from .discover import Candidate
 from .doctor import Check, Env, run_checks
-from .estimate import human_gb
 from .hardware import Machine
 from .harnesses import Harness
 from .hub import Hub, HubError
@@ -190,23 +190,15 @@ def _resolve_preselected(ctx: SetupContext, machine: Machine, spec: str) -> tupl
     return repo, ctx.choose_quant(options, suggested, machine)
 
 
-def _candidate_line(candidate: Candidate, machine: Machine) -> str:
-    option = candidate.suggested
-    marks = ", ".join(
-        m for m, on in (("thinking", candidate.thinking), ("vision", candidate.vision)) if on
-    )
-    marks = f" ({marks})" if marks else ""
-    state = (
-        "  · in models.ini"
-        if candidate.configured
-        else ("  · downloaded" if candidate.downloaded else "")
-    )
-    if option is None:
-        return f"{candidate.display_name}{marks}  {candidate.repo_id}"
-    return (
-        f"{candidate.display_name}{marks}  {candidate.repo_id}  {option.label}"
-        f"  {human_gb(option.total)} on disk, ~{human_gb(candidate.estimate)} in memory"
-        f"  {machine.fit_label(candidate.estimate)}{state}"
+def _browse_context(ctx: SetupContext) -> BrowseContext:
+    """The wizard's own callbacks, handed to the menu it shares with `browse-models`."""
+    return BrowseContext(
+        say=ctx.io.say,
+        ask=ctx.io.ask,
+        hub=ctx.hub,
+        recommend=ctx.recommend,
+        search=ctx.search,
+        choose_quant=ctx.choose_quant,
     )
 
 
@@ -220,57 +212,10 @@ def step_models(
         return [_resolve_preselected(ctx, machine, spec) for spec in preselected]
     if io.yes:
         io.say("  No --model given; nothing is downloaded without asking.")
-        io.say("  Later: local-llm recommend    or    local-llm pull <org/repo>")
+        io.say("  Later: local-llm browse-models    or    local-llm pull <org/repo>")
         return []
 
-    io.say("  Looking at what is popular on Hugging Face and what fits here...")
-    try:
-        groups = ctx.recommend(machine, preset, use)
-    except HubError as error:
-        io.say(f"  Could not reach Hugging Face: {error}")
-        return []
-    wanted = [use] if use else list(GROUPS)
-    numbered: list[Candidate] = []
-    while True:
-        for group in wanted:
-            io.say(f"  {group}")
-            for candidate in groups.get(group, []):
-                if candidate in numbered:
-                    continue
-                numbered.append(candidate)
-                io.say(f"   {len(numbered):>2}. {_candidate_line(candidate, machine)}")
-        answer = io.ask(
-            "  Numbers to download (e.g. 1 3), s <text> to search, n for none", "n"
-        ).strip()
-        if answer.lower() in ("n", "none", ""):
-            return []
-        if answer.lower().startswith("s "):
-            try:
-                results = ctx.search(machine, preset, answer[2:].strip())
-            except HubError as error:
-                io.say(f"  Search failed: {error}")
-                continue
-            groups = {"search": results}
-            wanted = ["search"]
-            continue
-        chosen: list[tuple[str, QuantOption]] = []
-        try:
-            picks = [numbered[int(token) - 1] for token in answer.split()]
-        except (ValueError, IndexError):
-            io.say(f"  Pick numbers between 1 and {len(numbered)}.")
-            continue
-        for candidate in picks:
-            if not candidate.options:
-                try:
-                    files = ctx.hub.repo_files(candidate.repo_id)
-                    candidate.options = quant_options(files.files)
-                    candidate.suggested, _ = suggest(candidate.options, machine.budget)
-                except HubError as error:
-                    io.say(f"  {candidate.repo_id}: {error}")
-                    continue
-            option = ctx.choose_quant(candidate.options, candidate.suggested, machine)
-            chosen.append((candidate.repo_id, option))
-        return chosen
+    return pick_models(_browse_context(ctx), machine, preset, use=use)
 
 
 # ---------------------------------------------------------------- 4. download
@@ -420,8 +365,8 @@ def run_setup(ctx: SetupContext, *, use: str | None = None, models: list[str] = 
         if preset is None or not preset.sections():
             io.say("")
             io.say("No models configured yet. When you are ready:")
-            io.say("  local-llm recommend          what fits this machine")
-            io.say("  local-llm pull <org/repo>    download one and add it")
+            io.say("  local-llm browse-models      pick from what fits this machine")
+            io.say("  local-llm pull <org/repo>    or download one by name")
             io.say("  local-llm up                 then start serving")
             return 0
         step_start(ctx, preset)

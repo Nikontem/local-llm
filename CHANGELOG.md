@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- New command: `local-llm browse-models` opens the model menu from setup step
+  3 on its own, so choosing models is no longer something you can only do
+  during the first run. It takes several numbers at once, searches Hugging
+  Face with `s <text>` without ending the menu, asks the quantization per
+  pick, and downloads and configures each one. A model already in
+  `models.ini` is skipped by name rather than downloaded twice, a download that
+  fails is named and the run carries on to the picks after it rather than
+  throwing away answers you have already given, an answer it cannot read is
+  refused and asked again instead of dropping you back to the shell, and
+  `settings.toml` is left alone. Without a terminal it refuses and
+  names `recommend --json` and `pull` as the ways to do this in a script. The
+  wizard's model step and the new command now run the same code, so they
+  cannot drift apart.
+
 - New command: `local-llm tune <model>` runs a model against a workload
   shaped like a coding agent's traffic and times it, varying batch size,
   micro-batch size, flash attention, and key-value cache precision one at a

@@ -34,6 +34,7 @@ from .agents import (
     qwen_env,
     resolve_model,
 )
+from .browse import BrowseContext, pick_models
 from .discover import GROUPS, Candidate, gather
 from .discover import search as discover_search
 from .doctor import Check, Env, run_checks  # noqa: F401 - Check re-exported for tests
@@ -1247,7 +1248,8 @@ def recommend(
             out.print(f"  {len(numbered):>2}. {_candidate_line(candidate, machine)}")
         out.print()
     if not pick:
-        out.print("  local-llm recommend --pick         choose one and download it")
+        out.print("  local-llm browse-models            pick several, or search the Hub")
+        out.print("  local-llm recommend --pick         choose one of these and download it")
         out.print("  local-llm pull <repo>[:QUANT]      or name it yourself")
         return
     if not numbered:
@@ -1262,6 +1264,87 @@ def recommend(
     option = _choose_option(candidate.options, candidate.suggested, machine, yes=False)
     _pull(st, hub, machine, candidate.repo_id, option, name=None, context=None, extra=[],
           no_tuning=False, yes=True)
+
+
+def _browse_recommend(hub, machine, preset, *, include_finetunes: bool, limit: int):
+    """The menu's scan of the Hub: same progress line as `recommend`, wiped when done."""
+    try:
+        return gather(
+            hub, machine, preset, include_finetunes=include_finetunes,
+            limit_per_group=limit, on_progress=scan_line,
+        )
+    finally:
+        clear_scan_line()
+
+
+@app.command(name="browse-models")
+def browse_models_cmd(
+    use: str | None = typer.Option(None, "--use", help="coding, general, small or vision."),
+    include_finetunes: bool = typer.Option(
+        False, "--include-finetunes", help="Also show community fine-tunes and merges."
+    ),
+    limit: int = typer.Option(3, "--limit", help="Models per use case."),
+    refresh: bool = typer.Option(False, "--refresh", help="Ignore the 24-hour cache."),
+) -> None:
+    """Browse and search Hugging Face, and download as many models as you pick."""
+    st = state()
+    if use is not None and use not in GROUPS:
+        fail(f"--use must be one of: {', '.join(GROUPS)}")
+    if not _interactive():
+        fail(
+            "browse-models is a menu and needs a terminal.\n"
+            "  local-llm recommend --json         the same list, for a script\n"
+            "  local-llm pull <repo>[:QUANT]      to download without asking"
+        )
+    machine = _machine(st)
+    hub = _make_hub(st, refresh)
+    out.print(machine.describe())
+    ctx = BrowseContext(
+        say=out.print,
+        ask=lambda prompt, default: typer.prompt(prompt, default=default),
+        hub=hub,
+        recommend=lambda machine_, preset, use_: _browse_recommend(
+            hub, machine_, preset, include_finetunes=include_finetunes, limit=limit
+        ),
+        search=lambda machine_, preset, text: discover_search(
+            hub, machine_, preset, text=text, limit=10
+        ),
+        choose_quant=lambda options, suggested, machine_: _choose_option(
+            options, suggested, machine_, yes=False
+        ),
+    )
+    try:
+        chosen = pick_models(ctx, machine, _preset_or_none(st), use=use)
+    except HubError as error:
+        fail(str(error))
+    if not chosen:
+        out.print("  nothing downloaded")
+        return
+    failed: list[str] = []
+    for repo_id, option in chosen:
+        # Each pull is its own attempt: one repository that is already configured, or
+        # that the Hub will not serve, must not take the rest of the picks with it.
+        section = section_name(repo_id, option.primary)
+        preset = _preset_or_none(st)
+        if preset is not None and preset.has_section(section):
+            out.print(f"[{section}] is already in {st.paths.preset}, skipped")
+            continue
+        try:
+            _pull(st, hub, machine, repo_id, option, name=None, context=None, extra=[],
+                  no_tuning=False, yes=True)
+        except typer.Exit:
+            # `_pull` reports a gated repository, a dead connection or a full disk
+            # through fail(), which leaves by raising. That ends one download, not the
+            # session: the picks after this one were chosen and their quantization
+            # answered for, and throwing them away over another repository's problem
+            # would make the person type the whole menu again. The message is already
+            # on screen; what is added here is the fact that the run moved on.
+            out.print(f"  {repo_id} was not added; going on to the rest")
+            failed.append(repo_id)
+    if failed:
+        # Said once at the end, because by now the failure has scrolled past whatever
+        # downloaded after it, and the exit code has to carry the bad news too.
+        fail(f"Not added: {', '.join(failed)}")
 
 
 @app.command()
