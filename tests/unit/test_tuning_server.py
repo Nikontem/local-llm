@@ -43,7 +43,7 @@ def test_a_response_without_timings_is_an_error():
         raise AssertionError("expected TuningError")
 
 
-def _context(backend, posts):
+def _context(backend, posts, healthy=lambda base_url: True):
     def post(url, body):
         posts.append((url, body))
         return json.loads(FIXTURE.read_text())
@@ -52,6 +52,7 @@ def _context(backend, posts):
         server_binary="/opt/bin/llama-server",
         backend=backend,
         post=post,
+        healthy=healthy,
         port_in_use=lambda host, port: False,
         sleep=lambda seconds: None,
     )
@@ -83,6 +84,61 @@ def test_a_server_that_never_comes_up_is_recorded_and_the_run_continues():
     assert len(results) == 1
     assert not results[0].ok
     assert "did not start" in results[0].error
+
+
+def test_a_slow_to_load_server_is_waited_for_before_the_first_request():
+    backend = FakeBackend()
+    backend.spawn_listening = {5699}
+    posts = []
+    # 503 for the first three polls, then healthy — the port-open-but-loading
+    # window a large model can spend a long time in.
+    calls = []
+
+    def healthy(base_url):
+        calls.append(base_url)
+        return len(calls) > 3
+
+    context = _context(backend, posts, healthy=healthy)
+    results = server.measure(Path("/m.gguf"), AGENT, [BASE], context, 2)
+    assert len(results) == 1 and results[0].ok
+    assert len(calls) > 3
+    # Nothing was sent to the server until it reported healthy.
+    assert len(posts) == 3
+
+
+def test_a_server_that_never_becomes_healthy_is_recorded_and_the_run_continues():
+    backend = FakeBackend()
+    backend.spawn_listening = {5699}
+    posts = []
+    context = _context(backend, posts, healthy=lambda base_url: False)
+    results = server.measure(Path("/m.gguf"), AGENT, [BASE], context, 2)
+    assert len(results) == 1
+    assert not results[0].ok
+    assert "ready" in results[0].error
+    assert posts == []
+    # The scratch server is still stopped even though it never answered.
+    assert len(backend.terminated) == 1
+
+
+def test_a_server_that_dies_while_unhealthy_fails_fast():
+    backend = FakeBackend()
+    backend.spawn_listening = {5699}
+    posts = []
+
+    calls = []
+
+    def healthy(base_url):
+        calls.append(base_url)
+        if len(calls) == 2:
+            backend._exit(next(iter(backend.procs)))
+        return False
+
+    context = _context(backend, posts, healthy=healthy)
+    results = server.measure(Path("/m.gguf"), AGENT, [BASE], context, 2)
+    assert len(results) == 1
+    assert not results[0].ok
+    assert "died" in results[0].error
+    assert posts == []
 
 
 def test_a_missing_binary_is_refused_before_anything_runs():

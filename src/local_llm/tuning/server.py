@@ -21,7 +21,20 @@ from . import Candidate, Measurement, Profile, TuningContext, TuningError
 _HOST = "127.0.0.1"
 _FIRST_PORT = 5699
 _PORT_ATTEMPTS = 40
+# The budget for the port to appear at all. This only has to cover process
+# startup and argument parsing, which is seconds even on a slow machine — if the
+# port has not opened by 180s, something is wrong with the invocation itself,
+# not with how big the model is.
 _START_TIMEOUT = 180.0
+# The budget for the server to answer a real request after its port is open.
+# `llama-server` binds the port, then loads the model's weights into memory
+# before it can serve anything but a 503, and that load is proportional to the
+# model's size — a 16.5 GB model can spend minutes in this state on a cold
+# disk cache. Reusing `_START_TIMEOUT` here is what let this bug through in the
+# first place: on the small models used in development the window between
+# "port open" and "weights loaded" is too narrow to ever hit, so the distinct
+# budget did nothing until a large model made it matter.
+_READY_TIMEOUT = 600.0
 _POLL = 0.5
 # Room above the profile so the measured request is never truncated, which would
 # time a shorter piece of work than the one being compared.
@@ -105,6 +118,27 @@ def _wait_for_listening(context: TuningContext, pid: int, port: int, log_path: P
     raise TuningError(f"The server did not start listening in time{_why(log_path)}")
 
 
+def _wait_for_healthy(context: TuningContext, pid: int, base_url: str, log_path: Path) -> None:
+    """Wait past the 503 window, not just past the open port.
+
+    An open port only means the process exists; it says nothing about whether
+    the weights are in memory yet, and `llama-server` answers every request in
+    between with a 503. Polling `context.healthy` instead of trusting the port
+    is what makes the priming request land on a server that can actually serve
+    it, rather than on the narrow-on-small-models, wide-on-large-models window
+    where every request fails identically.
+    """
+    waited = 0.0
+    while waited < _READY_TIMEOUT:
+        if context.backend.info(pid) is None:
+            raise TuningError(f"The server died before it became ready{_why(log_path)}")
+        if context.healthy(base_url):
+            return
+        context.sleep(_POLL)
+        waited += _POLL
+    raise TuningError(f"The server never became ready{_why(log_path)}")
+
+
 def _measure_one(
     model_path: Path,
     profile: Profile,
@@ -122,7 +156,9 @@ def _measure_one(
     pid = context.backend.spawn(args, log_path)
     try:
         _wait_for_listening(context, pid, port, log_path)
-        url = f"http://{_HOST}:{port}/completion"
+        base_url = f"http://{_HOST}:{port}"
+        _wait_for_healthy(context, pid, base_url, log_path)
+        url = f"{base_url}/completion"
         prime = _filler("word", profile.depth)
         follow = prime + " " + _filler("next", profile.prompt)
         # The priming turn fills the cache. With cache_prompt on, the measured

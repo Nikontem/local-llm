@@ -127,6 +127,28 @@ def _urllib_post(url: str, body: dict) -> dict:
         raise TuningError(f"Request to {url} failed: {error}") from error
 
 
+_HEALTH_TIMEOUT = 5
+
+
+def _urllib_healthy(base_url: str) -> bool:
+    """The default readiness probe for engine B, replaced wholesale in tests.
+
+    `llama-server` opens its listening socket before it has finished loading the
+    model's weights, and answers every request in that window with a plain 503.
+    A caller polling this function is asking "would a real request succeed right
+    now", not "is something listening", so every way this can go wrong — refused
+    connection, a 503, a timeout, a body that is not what `/health` normally
+    sends — collapses to the same answer: not yet. Raising here would turn a
+    single slow poll into a crashed measurement, which is strictly worse than
+    trying again on the next tick.
+    """
+    try:
+        with urllib.request.urlopen(f"{base_url}/health", timeout=_HEALTH_TIMEOUT) as response:
+            return response.status == 200
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
 @dataclass
 class TuningContext:
     """Every side effect an engine needs, injected.
@@ -142,6 +164,7 @@ class TuningContext:
     backend: ProcessBackend = field(default_factory=PsutilBackend)
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run
     post: Callable[[str, dict], dict] = _urllib_post
+    healthy: Callable[[str], bool] = _urllib_healthy
     port_in_use: Callable[[str, int], bool] = port_in_use
     say: Callable[[str], None] = lambda message: None
     sleep: Callable[[float], None] = time.sleep
