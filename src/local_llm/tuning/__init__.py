@@ -127,23 +127,38 @@ def _urllib_post(url: str, body: dict) -> dict:
         raise TuningError(f"Request to {url} failed: {error}") from error
 
 
-_HEALTH_TIMEOUT = 5
+_READY_PROBE_TIMEOUT = 30
 
 
-def _urllib_healthy(base_url: str) -> bool:
+def _urllib_ready(base_url: str) -> bool:
     """The default readiness probe for engine B, replaced wholesale in tests.
 
-    `llama-server` opens its listening socket before it has finished loading the
-    model's weights, and answers every request in that window with a plain 503.
-    A caller polling this function is asking "would a real request succeed right
-    now", not "is something listening", so every way this can go wrong — refused
-    connection, a 503, a timeout, a body that is not what `/health` normally
-    sends — collapses to the same answer: not yet. Raising here would turn a
-    single slow poll into a crashed measurement, which is strictly worse than
-    trying again on the next tick.
+    This used to poll `GET /health`. Measured directly against a 16.5 GB model,
+    `/health` answered `{"status": "ok"}` about two seconds after the process
+    started — long before the weights were in memory — and stayed `ok` straight
+    through the window where `/completion` was still answering 503. On a small
+    model warm in the page cache the two signals happened to turn green in the
+    same second, which is what let that version pass every unit test and the
+    smoke run before it cost two real runs. `/health` reports that the HTTP
+    server is up, nothing more; it was never the right question.
+
+    So the probe now sends the same kind of request the measurement itself
+    depends on: a minimal completion. A caller polling this function is asking
+    "would a real request succeed right now", and this cannot answer yes before
+    completions actually work, because it *is* one. Every way this can go
+    wrong — refused connection, a 503 while loading, a timeout, a body that
+    is not valid JSON — collapses to the same answer: not yet. Raising here
+    would turn a single slow poll into a crashed measurement, which is
+    strictly worse than trying again on the next tick.
     """
+    request = urllib.request.Request(
+        f"{base_url}/completion",
+        data=json.dumps({"prompt": "ready?", "n_predict": 1}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
     try:
-        with urllib.request.urlopen(f"{base_url}/health", timeout=_HEALTH_TIMEOUT) as response:
+        with urllib.request.urlopen(request, timeout=_READY_PROBE_TIMEOUT) as response:
             return response.status == 200
     except (urllib.error.URLError, OSError, ValueError):
         return False
@@ -164,7 +179,7 @@ class TuningContext:
     backend: ProcessBackend = field(default_factory=PsutilBackend)
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run
     post: Callable[[str, dict], dict] = _urllib_post
-    healthy: Callable[[str], bool] = _urllib_healthy
+    ready: Callable[[str], bool] = _urllib_ready
     port_in_use: Callable[[str, int], bool] = port_in_use
     say: Callable[[str], None] = lambda message: None
     sleep: Callable[[float], None] = time.sleep

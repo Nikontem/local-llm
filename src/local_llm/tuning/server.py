@@ -118,12 +118,12 @@ def _wait_for_listening(context: TuningContext, pid: int, port: int, log_path: P
     raise TuningError(f"The server did not start listening in time{_why(log_path)}")
 
 
-def _wait_for_healthy(context: TuningContext, pid: int, base_url: str, log_path: Path) -> None:
+def _wait_for_ready(context: TuningContext, pid: int, base_url: str, log_path: Path) -> None:
     """Wait past the 503 window, not just past the open port.
 
     An open port only means the process exists; it says nothing about whether
     the weights are in memory yet, and `llama-server` answers every request in
-    between with a 503. Polling `context.healthy` instead of trusting the port
+    between with a 503. Polling `context.ready` instead of trusting the port
     is what makes the priming request land on a server that can actually serve
     it, rather than on the narrow-on-small-models, wide-on-large-models window
     where every request fails identically.
@@ -132,7 +132,7 @@ def _wait_for_healthy(context: TuningContext, pid: int, base_url: str, log_path:
     while waited < _READY_TIMEOUT:
         if context.backend.info(pid) is None:
             raise TuningError(f"The server died before it became ready{_why(log_path)}")
-        if context.healthy(base_url):
+        if context.ready(base_url):
             return
         context.sleep(_POLL)
         waited += _POLL
@@ -157,7 +157,7 @@ def _measure_one(
     try:
         _wait_for_listening(context, pid, port, log_path)
         base_url = f"http://{_HOST}:{port}"
-        _wait_for_healthy(context, pid, base_url, log_path)
+        _wait_for_ready(context, pid, base_url, log_path)
         url = f"{base_url}/completion"
         prime = _filler("word", profile.depth)
         follow = prime + " " + _filler("next", profile.prompt)

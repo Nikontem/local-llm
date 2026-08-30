@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
+from unittest.mock import patch
 
-from local_llm.tuning import Candidate, Profile, TuningContext, TuningError, server
+from local_llm.tuning import Candidate, Profile, TuningContext, TuningError, _urllib_ready, server
 
 from .fakes import FakeBackend
 
@@ -43,7 +44,7 @@ def test_a_response_without_timings_is_an_error():
         raise AssertionError("expected TuningError")
 
 
-def _context(backend, posts, healthy=lambda base_url: True):
+def _context(backend, posts, ready=lambda base_url: True):
     def post(url, body):
         posts.append((url, body))
         return json.loads(FIXTURE.read_text())
@@ -52,7 +53,7 @@ def _context(backend, posts, healthy=lambda base_url: True):
         server_binary="/opt/bin/llama-server",
         backend=backend,
         post=post,
-        healthy=healthy,
+        ready=ready,
         port_in_use=lambda host, port: False,
         sleep=lambda seconds: None,
     )
@@ -90,27 +91,27 @@ def test_a_slow_to_load_server_is_waited_for_before_the_first_request():
     backend = FakeBackend()
     backend.spawn_listening = {5699}
     posts = []
-    # 503 for the first three polls, then healthy — the port-open-but-loading
+    # 503 for the first three polls, then ready — the port-open-but-loading
     # window a large model can spend a long time in.
     calls = []
 
-    def healthy(base_url):
+    def ready(base_url):
         calls.append(base_url)
         return len(calls) > 3
 
-    context = _context(backend, posts, healthy=healthy)
+    context = _context(backend, posts, ready=ready)
     results = server.measure(Path("/m.gguf"), AGENT, [BASE], context, 2)
     assert len(results) == 1 and results[0].ok
     assert len(calls) > 3
-    # Nothing was sent to the server until it reported healthy.
+    # Nothing was sent to the server until it reported ready.
     assert len(posts) == 3
 
 
-def test_a_server_that_never_becomes_healthy_is_recorded_and_the_run_continues():
+def test_a_server_that_never_becomes_ready_is_recorded_and_the_run_continues():
     backend = FakeBackend()
     backend.spawn_listening = {5699}
     posts = []
-    context = _context(backend, posts, healthy=lambda base_url: False)
+    context = _context(backend, posts, ready=lambda base_url: False)
     results = server.measure(Path("/m.gguf"), AGENT, [BASE], context, 2)
     assert len(results) == 1
     assert not results[0].ok
@@ -120,25 +121,33 @@ def test_a_server_that_never_becomes_healthy_is_recorded_and_the_run_continues()
     assert len(backend.terminated) == 1
 
 
-def test_a_server_that_dies_while_unhealthy_fails_fast():
+def test_a_server_that_dies_while_not_ready_fails_fast():
     backend = FakeBackend()
     backend.spawn_listening = {5699}
     posts = []
 
     calls = []
 
-    def healthy(base_url):
+    def ready(base_url):
         calls.append(base_url)
         if len(calls) == 2:
             backend._exit(next(iter(backend.procs)))
         return False
 
-    context = _context(backend, posts, healthy=healthy)
+    context = _context(backend, posts, ready=ready)
     results = server.measure(Path("/m.gguf"), AGENT, [BASE], context, 2)
     assert len(results) == 1
     assert not results[0].ok
     assert "died" in results[0].error
     assert posts == []
+
+
+def test_the_default_ready_probe_returns_false_rather_than_raising_on_a_transport_failure():
+    # A connection refused is one of the transport failures the probe's
+    # contract says must collapse to False rather than propagate — the same
+    # class of error a 503, a timeout, or a dropped connection would produce.
+    with patch("local_llm.tuning.urllib.request.urlopen", side_effect=OSError("refused")):
+        assert _urllib_ready("http://127.0.0.1:5699") is False
 
 
 def test_a_missing_binary_is_refused_before_anything_runs():
