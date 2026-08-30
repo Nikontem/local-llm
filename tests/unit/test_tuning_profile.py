@@ -41,8 +41,10 @@ def test_the_candidate_list_varies_each_knob_once():
         "flash-attn off",
         "cache q8_0",
     ]
-    # The baseline's own pair, 2048/512, is not offered a second time.
-    assert [c.pair for c in result].count((2048, 512)) == 1
+    # Only the batch variations change the pair. Every other candidate keeps the
+    # baseline's, so exactly one setting differs from the baseline in each.
+    assert [c.pair for c in result if c.label.startswith("batch ")] == [(1024, 256), (4096, 1024)]
+    assert all(c.pair == base.pair for c in result if not c.label.startswith("batch "))
 
 
 def test_a_baseline_outside_the_pair_table_keeps_all_three_pairs():

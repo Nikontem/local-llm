@@ -66,28 +66,19 @@ def candidates(base: Candidate) -> list[Candidate]:
     because it varies one knob at a time as well.
     """
     result = [base]
-    non_baseline_pairs = [p for p in _PAIRS if p != base.pair]
-    for batch, ubatch in non_baseline_pairs:
+    for batch, ubatch in _PAIRS:
+        if (batch, ubatch) == base.pair:
+            continue
         result.append(
             Candidate(batch, ubatch, base.flash_attn, base.cache_type, f"batch {batch}/{ubatch}")
         )
     # `auto` almost always resolves to on, so the informative flip is to off.
     flipped = "on" if base.flash_attn == "off" else "off"
-    if non_baseline_pairs:
-        batch, ubatch = non_baseline_pairs[0]
-    else:
-        batch, ubatch = base.pair
     result.append(
-        Candidate(batch, ubatch, flipped, base.cache_type, f"flash-attn {flipped}")
+        Candidate(base.batch, base.ubatch, flipped, base.cache_type, f"flash-attn {flipped}")
     )
     other_cache = "q8_0" if base.cache_type == "f16" else "f16"
-    if len(non_baseline_pairs) >= 2:
-        batch, ubatch = non_baseline_pairs[1]
-    elif non_baseline_pairs:
-        batch, ubatch = non_baseline_pairs[0]
-    else:
-        batch, ubatch = base.pair
     result.append(
-        Candidate(batch, ubatch, base.flash_attn, other_cache, f"cache {other_cache}")
+        Candidate(base.batch, base.ubatch, base.flash_attn, other_cache, f"cache {other_cache}")
     )
     return result
