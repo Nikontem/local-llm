@@ -34,6 +34,10 @@ markers = ["live: needs network access to huggingface.co"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# The scripts under demo/ build the README's recordings; they are throwaway tools
+# for making videos, not part of the package, and holding them to the package's
+# lint rules only ever produces noise in a `ruff check .` of the whole tree.
+exclude = ["demo"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
