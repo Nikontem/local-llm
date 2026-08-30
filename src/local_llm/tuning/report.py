@@ -11,6 +11,7 @@ from collections.abc import Sequence
 
 from ..preset import Preset
 from . import BASELINE, Candidate, Measurement, Profile, turn_time
+from .profile import DEFAULTS
 
 INTERACTIONS_NOTE = (
     "Each setting was measured against the baseline on its own. "
@@ -87,14 +88,19 @@ def changed_keys(
     """The keys this candidate would actually change in the file.
 
     Compared against the *effective* value, which `Preset.get` resolves through
-    the `[*]` block. A value equal to the global default is not written, so a
-    section does not slowly fill up with lines that change nothing and hide the
-    ones that do.
+    the `[*]` block, falling back to llama.cpp's own default (`profile.DEFAULTS`)
+    when neither the section nor `[*]` sets the key at all. A value equal to the
+    global default is not written, so a section does not slowly fill up with
+    lines that change nothing and hide the ones that do.
     """
+    def effective(key: str) -> str | None:
+        set_value = preset.get(section, key)
+        return set_value if set_value is not None else DEFAULTS.get(key)
+
     return [
         (key, value)
         for key, value in candidate.preset_keys()
-        if preset.get(section, key) != value
+        if effective(key) != value
     ]
 
 

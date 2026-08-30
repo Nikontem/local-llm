@@ -1,5 +1,6 @@
 from local_llm import cli
 from local_llm.preset import Preset
+from local_llm.router import Router, RouterError
 from local_llm.tuning import Measurement
 
 
@@ -62,6 +63,10 @@ def test_tune_writes_only_the_keys_that_change(harness):
     assert preset.get("small", "ub") == "256"
     # The model path the section already had is still there.
     assert preset.get("small", "model", fallback_to_star=False).endswith("small.gguf")
+    # cache-type was never asked about by the winning candidate (only batch/ubatch
+    # changed), so it must not be pinned in the file at llama.cpp's own default.
+    assert preset.get("small", "cache-type-k", fallback_to_star=False) is None
+    assert preset.get("small", "cache-type-v", fallback_to_star=False) is None
 
 
 def test_tune_leaves_the_file_alone_without_yes_when_not_interactive(harness):
@@ -105,6 +110,33 @@ def test_a_resident_model_is_reloaded_even_when_the_engine_explodes(harness):
     result = harness.run("tune", "small", "--yes")
     assert result.exit_code != 0
     assert ("POST", "/models/load", {"model": "big"}) in harness.http.calls
+
+
+def test_a_model_already_unloaded_is_still_reloaded_when_a_later_unload_fails(harness):
+    # Two models resident. The second one refuses to unload. The first must still
+    # come back - it was already put down before the router turned unhealthy.
+    running_router(harness)
+    harness.backend.add(4243, ["llama-server", "--alias", "first"], rss=5 * 1024**3, parent=4242)
+    harness.backend.add(4244, ["llama-server", "--alias", "second"], rss=5 * 1024**3, parent=4242)
+
+    def flaky(method, path, body):
+        harness.http.calls.append((method, path, body))
+        if (method, path, body) == ("POST", "/models/unload", {"model": "second"}):
+            raise RouterError("router says no")
+        return harness.http.responses.get((method, path), {"success": True})
+
+    def make_flaky_router(p, s, **kwargs):
+        return Router(p, s, backend=harness.backend, http=flaky,
+                      binary="/opt/bin/llama-server", help_text=lambda binary: "",
+                      sleep=lambda seconds: None, log=harness.messages.append)
+
+    harness.monkeypatch.setattr(cli, "Router", make_flaky_router)
+    harness.monkeypatch.setitem(cli._ENGINES, "bench", _fake_engine(_flat()))
+    result = harness.run("tune", "small", "--yes")
+    assert result.exit_code != 0
+    assert ("POST", "/models/unload", {"model": "first"}) in harness.http.calls
+    assert ("POST", "/models/load", {"model": "first"}) in harness.http.calls
+    assert ("POST", "/models/load", {"model": "second"}) not in harness.http.calls
 
 
 def test_the_engine_flag_selects_the_server_engine(harness):

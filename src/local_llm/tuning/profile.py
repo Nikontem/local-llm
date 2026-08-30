@@ -22,6 +22,19 @@ _DEFAULT_UBATCH = 512
 _DEFAULT_FLASH = "auto"
 _DEFAULT_CACHE = "f16"
 
+# The same defaults, keyed by the models.ini setting they apply to, so that
+# `report.changed_keys` can tell "unset" from "set to something else" without
+# duplicating these values a second time. A key missing from a section (and not
+# supplied by the `[*]` block either) runs at this default, so a candidate equal
+# to it changes nothing and must not be written.
+DEFAULTS: dict[str, str] = {
+    "b": str(_DEFAULT_BATCH),
+    "ub": str(_DEFAULT_UBATCH),
+    "flash-attn": _DEFAULT_FLASH,
+    "cache-type-k": _DEFAULT_CACHE,
+    "cache-type-v": _DEFAULT_CACHE,
+}
+
 # Valid pairs only: a micro-batch can never exceed its batch.
 _PAIRS = ((1024, 256), (2048, 512), (4096, 1024))
 

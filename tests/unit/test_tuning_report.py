@@ -91,13 +91,26 @@ def test_a_failed_row_says_so_instead_of_printing_a_rate():
 
 def test_only_keys_that_differ_from_the_effective_value_are_written():
     # flash-attn = auto comes from [*]; writing it into the section would add a
-    # line that changes nothing.
+    # line that changes nothing. cache-type-k/v are set nowhere at all, so their
+    # effective value is llama.cpp's own default ("f16"), which FAST also asks
+    # for - so those two must not be written either.
     preset = Preset.parse(
         "[*]\nflash-attn = auto\n\n[m]\nmodel = /tmp/m.gguf\nb = 2048\nub = 512\n"
     )
     changes = report_module.changed_keys(FAST, preset, "m")
-    assert changes == [("b", "4096"), ("ub", "1024"), ("cache-type-k", "f16"),
-                       ("cache-type-v", "f16")]
+    assert changes == [("b", "4096"), ("ub", "1024")]
+
+
+def test_an_unset_key_is_compared_against_llamacpps_own_default_not_none():
+    # The section sets none of the five tuned keys at all, and neither does [*].
+    # A candidate that only varies batch/ubatch must not also drag flash-attn and
+    # cache-type along for the ride just because they were never written down.
+    preset = Preset.parse("[m]\nmodel = /tmp/m.gguf\n")
+    changed = Candidate(batch=1024, ubatch=256, flash_attn="auto", cache_type="f16",
+                        label="batch 1024/256")
+    assert report_module.changed_keys(changed, preset, "m") == [
+        ("b", "1024"), ("ub", "256"),
+    ]
 
 
 def test_a_winner_identical_to_the_file_implies_no_changes():

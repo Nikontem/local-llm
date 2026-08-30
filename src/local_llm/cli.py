@@ -645,15 +645,17 @@ def _router_out_of_the_way(st: State, yes: bool, quiet: bool):
     if resident and not yes and _interactive():
         if not typer.confirm("Unload and reload afterwards?", default=True):
             raise typer.Exit(1)
-    for name in resident:
-        try:
-            router.unload_model(name)
-        except RouterError as error:
-            fail(f"Could not unload {name}: {error}")
+    unloaded: list[str] = []
     try:
+        for name in resident:
+            try:
+                router.unload_model(name)
+            except RouterError as error:
+                fail(f"Could not unload {name}: {error}")
+            unloaded.append(name)
         yield
     finally:
-        for name in resident:
+        for name in unloaded:
             try:
                 router.load_model(name)
             except RouterError as error:
