@@ -137,22 +137,3 @@ def test_a_model_already_unloaded_is_still_reloaded_when_a_later_unload_fails(ha
     assert ("POST", "/models/unload", {"model": "first"}) in harness.http.calls
     assert ("POST", "/models/load", {"model": "first"}) in harness.http.calls
     assert ("POST", "/models/load", {"model": "second"}) not in harness.http.calls
-
-
-def test_the_engine_flag_selects_the_server_engine(harness):
-    seen = []
-
-    def engine(model_path, profile, candidates, context, repetitions):
-        seen.append("server")
-        return [Measurement(c, 400.0, 30.0, repetitions) for c in candidates]
-
-    harness.monkeypatch.setitem(cli._ENGINES, "server", engine)
-    result = harness.run("tune", "small", "--engine", "server")
-    assert result.exit_code == 0
-    assert seen == ["server"]
-
-
-def test_an_unknown_engine_is_refused(harness):
-    result = harness.run("tune", "small", "--engine", "guess")
-    assert result.exit_code == 1
-    assert "guess" in result.output

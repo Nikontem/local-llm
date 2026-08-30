@@ -353,37 +353,23 @@ keeps the finding.
 
 ### Result (2026-08-30)
 
-Run on the Apple M4 Pro, 48 GB, that the rest of this document's numbers came
-from — 32.3–30.3 GB free at the start, never dropping below 26.7 GB between
-runs — against the Homebrew build of llama.cpp reported by
-`llama-server --version`:
+Run on the Apple M4 Pro, 48 GB, against the Homebrew build of llama.cpp
+reported by `llama-server --version`:
 
 ```
 version: 0.3.0 (build 10621, commit c1d0e7a00)
 built with AppleClang 21.0.0.21000101 for Darwin arm64
 ```
 
-The model was the one the user named for this run,
-`unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_XL`, about 16.5 GB — the
-documented, single exception to the 1 GB-model rule for experiments. The
-router was stopped and `pgrep -fl llama-server` showed nothing running,
-before and after.
+The model was `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_XL`, about
+16.5 GB — the documented, single exception to the 1 GB-model rule for
+experiments. Both engines ran the same six candidates against it, at the
+default three repetitions per candidate.
 
-`--engine bench` (`llama-bench`, loading the model directly) produced a
-complete ranking, no candidate erroring:
+#### First attempt: engine B fails all five candidates in 17 seconds
 
-```
-batch 4096/1024         12.45s  pp    486.1  tg   63.6
-baseline                13.09s  pp    452.1  tg   63.5
-cache q8_0              13.42s  pp    454.2  tg   58.1
-batch 1024/256          14.32s  pp    398.3  tg   63.5
-flash-attn off          17.63s  pp    380.0  tg   37.4
-winner: batch 4096/1024
-```
-
-`--engine server` (a real `llama-server`, timed over HTTP) did not produce a
-ranking at all. Every one of the five candidates failed the same way, on the
-very first request:
+The first run of `--engine server` did not produce a ranking. Every candidate
+failed the same way, on the very first request:
 
 ```
 baseline                  infs  pp      0.0  tg    0.0  Request to http://127.0.0.1:5699/completion failed: HTTP Error 503: Service Unavailable
@@ -393,10 +379,10 @@ flash-attn off            infs  pp      0.0  tg    0.0  Request to http://127.0.
 cache q8_0                infs  pp      0.0  tg    0.0  Request to http://127.0.0.1:5699/completion failed: HTTP Error 503: Service Unavailable
 ```
 
-The whole five-candidate server run took 17 seconds — each candidate failed
-within a second or two of its process being spawned, not after the 180-second
-start timeout in `server.py`. The scratch server's own log, captured by
-`_why()`, shows the same shape for every one of the five spawns:
+The whole five-candidate run took 17 seconds — each candidate failed within a
+second or two of its process being spawned, not after the 180-second start
+timeout `server.py` used. The scratch server's own log, captured by `_why()`,
+showed the same shape for every spawn:
 
 ```
 0.00.056.812 I srv    load_model: loading model '.../Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf'
@@ -404,26 +390,95 @@ start timeout in `server.py`. The scratch server's own log, captured by
 ```
 
 and then nothing further — no `all slots are idle`, no `model loaded`, before
-the process was terminated. `_wait_for_listening()` in `server.py` only
-confirms the HTTP port is open; on a 16.5 GB model, llama-server opens that
-port well before the weights are loaded and the slots are ready, and answers
-every request in between with 503. The priming request `_measure_one()` sends
-immediately after `_wait_for_listening()` returns lands in that window, raises
-a `TuningError` on the first candidate's first request, and the candidate is
-recorded as a hard failure rather than a measurement — for all five
-candidates, every time. This is a readiness-check bug in engine B, not a
-finding about candidate performance: no candidate was ever actually timed by
-`--engine server` in this run.
+the process was terminated. The cause: `_wait_for_listening()` only confirmed
+the HTTP port was open. On a 16.5 GB model, `llama-server` binds its port well
+before the weights are loaded and the slots are ready, and answers every
+request in that window with 503. The priming request sent immediately after
+`_wait_for_listening()` returned landed in exactly that window, raised a
+`TuningError` on the first candidate's first request, and every candidate was
+recorded as a hard failure rather than a measurement. No candidate was ever
+actually timed.
 
-**The rule from this section — do the two engines name the same winner —
-cannot be evaluated from this run.** Engine A named `batch 4096/1024`.
-Engine B named no winner: it produced five identical failures, not a ranking,
-so there is nothing on its side to compare against engine A's answer. Whether
-the two engines would agree once engine B's readiness check is fixed to wait
-for the server to finish loading, not merely to start listening, is still
-open. `models.ini` (`~/.config/local-llm/models.ini`) was not modified by
-this run: its modification time was `Aug 26 21:27:15 2026` both before and
-after.
+#### Second attempt: `/health` is the wrong readiness signal
+
+The obvious fix was to poll `GET /health` instead of just the port. Measured
+directly against this model, `llama-server` answers `/health` with
+`{"status":"ok"}` about two seconds after start — long before the weights are
+loaded and long before a completion can succeed. Readiness defined this way
+would have shortened the failure window but not closed it: the same class of
+503 was still possible, just less likely to land inside the measured
+request. This was rejected as a readiness signal before it was shipped, on
+the strength of that direct measurement.
+
+#### Third attempt: readiness is a completion that actually succeeds
+
+The working fix drops both prior signals and defines readiness as a minimal
+completion request succeeding. This cannot, by construction, report ready
+before completions actually work — there is no earlier state that satisfies
+it. With that fix, engine B produced a complete ranking on the same model, at
+the default three repetitions:
+
+```
+batch 4096/1024   25.09s   201.1   54.2
+baseline          25.38s   198.2   54.4
+batch 1024/256    25.92s   192.9   54.6
+cache q8_0        26.65s   191.4   48.8
+flash-attn off    37.60s   149.8   24.9
+winner: batch 4096/1024
+```
+
+Engine A, `llama-bench`, ran the same six candidates on the same model and
+also produced a complete ranking:
+
+```
+batch 4096/1024   12.47s   486.3   63.3
+cache q8_0        13.62s   443.9   58.3
+batch 1024/256    14.33s   398.6   63.1
+baseline          15.71s   351.3   63.3
+flash-attn off    17.64s   379.1   37.5
+winner: batch 4096/1024
+```
+
+(Columns are turn time, prompt tokens/sec, generation tokens/sec.) Engine A's
+whole six-candidate run took 305 seconds; engine B's took 475 seconds.
+
+#### The verdict against the rule
+
+**Both engines named the same winner, `batch 4096/1024`, and the same last
+place, `flash-attn off`.** Per the rule fixed at the top of this section — do
+the two engines name the same winner — the answer is yes, and engine B is
+deleted. Engine B's absolute rates ran at 0.40 to 0.56 times engine A's prompt
+rate and about 0.85 times its generation rate, a consistent offset across
+every candidate — exactly the kind of disagreement the rule says does not
+matter, because a tuner only has to rank, never to measure absolutely.
+
+**Engine B's two failed attempts are the strongest argument this document has
+for having built two engines at all.** Nothing in the unit test suite —
+`FakeBackend` and `FakeHttp`, by design — could have caught either bug: both
+are about the actual timing of a real process loading real weights, which a
+fake spawns and answers instantly. Nor would a small-model smoke run have
+caught the first bug reliably, and it could not have caught the second at
+all, because `/health` returns `{"status":"ok"}` within about two seconds
+regardless of model size — the failure mode depends on load taking longer
+than that, which only a large model on real hardware reliably exercises. The
+16.5 GB comparison run is what forced both bugs into the open.
+
+**The middle of the ranking is not reproducible, and the winner is the only
+part of either ranking worth trusting.** The two engines order their middle
+three candidates differently — engine A has `cache q8_0` ahead of
+`batch 1024/256` ahead of `baseline`; engine B has `baseline` ahead of
+`batch 1024/256` ahead of `cache q8_0`. More tellingly, engine A did not even
+reproduce its own middle across two runs of the same model on the same
+machine: this run measured `baseline` at 15.71 seconds and 351 prompt
+tokens/sec, against 13.09 seconds and 452 prompt tokens/sec in the earlier run
+recorded above. Only first and last place — `batch 4096/1024` winning,
+`flash-attn off` losing — held across every run and both engines. A
+difference of a few percent anywhere else in the printed table should not be
+read as meaningful; the winner is trustworthy, the ordering behind it largely
+is not.
+
+`models.ini` (`~/.config/local-llm/models.ini`) was not modified by this
+comparison run.
 
 ## 9. Output, and writing the result back
 

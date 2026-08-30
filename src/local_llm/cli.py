@@ -72,7 +72,6 @@ from .shellrc import (
 from .tuning import bench as tuning_bench
 from .tuning import profile as tuning_profile
 from .tuning import report as tuning_report
-from .tuning import server as tuning_server
 from .uninstall import (
     KEYS,
     delete_model_file,
@@ -98,11 +97,11 @@ _sleep = time.sleep
 _open_url = webbrowser.open
 _which = shutil.which
 
-# The two measurement engines, as a mapping so a test can replace one without a
-# subprocess and so `--engine` has exactly one place to look them up.
+# The measurement engine, as a mapping so a test can replace it without a
+# subprocess. `tune` previously chose between two engines here; only one
+# remains, kept as a mapping to avoid disturbing the lookup below.
 _ENGINES: dict[str, tuning.EngineFn] = {
     "bench": tuning_bench.measure,
-    "server": tuning_server.measure,
 }
 
 
@@ -675,9 +674,6 @@ def _tuning_comments(preset: Preset, name: str, best, profile: tuning.Profile) -
 @app.command()
 def tune(
     model: str = typer.Argument(..., autocompletion=complete_model, help="Model to measure."),
-    engine: str = typer.Option(
-        "bench", "--engine", help="Which measurement to use: bench (llama-bench) or server."
-    ),
     repetitions: int = typer.Option(
         3, "--repetitions", help="How many times each setting is measured."
     ),
@@ -687,8 +683,6 @@ def tune(
     ),
 ) -> None:
     """Measure how fast a model answers under different settings, and offer to keep the best."""
-    if engine not in _ENGINES:
-        fail(f"Unknown engine: {engine}\n  choose one of: {', '.join(sorted(_ENGINES))}")
     st = state()
     preset = st.preset()
     try:
@@ -709,11 +703,11 @@ def tune(
 
     context = tuning.TuningContext(say=(lambda message: None) if json_out else out.print)
     if not json_out:
-        out.print(f"measuring {name} with {engine}, {len(candidates)} settings, "
+        out.print(f"measuring {name} with bench, {len(candidates)} settings, "
                   f"{repetitions} runs each")
     with _router_out_of_the_way(st, yes, json_out):
         try:
-            measurements = _ENGINES[engine](model_path, profile, candidates, context, repetitions)
+            measurements = _ENGINES["bench"](model_path, profile, candidates, context, repetitions)
         except tuning.TuningError as error:
             fail(str(error))
 

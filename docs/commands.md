@@ -134,7 +134,7 @@ only when you know two configured models together fit the budget.
   `n-predict`, skipping sampling values.
 - **`local-llm add PATH [--mmproj PATH] [--name NAME]`** — the same tuning
   and section-writing as `pull`, for a GGUF file you already have on disk.
-- **`local-llm tune <model> [--engine bench|server] [--repetitions N] [--json]
+- **`local-llm tune <model> [--repetitions N] [--json]
   [-y]`** — measure how fast a model actually answers on this machine, and offer
   to keep the settings that answered fastest. Everything else `local-llm` writes
   is estimated from the model file and your memory; this is the one command that
@@ -147,8 +147,8 @@ only when you know two configured models together fit the budget.
   ten to twenty minutes on a large model. If the router is holding a model it is
   unloaded for the duration and reloaded afterwards, because a second copy of a
   model in memory makes every number meaningless. Nothing is written to
-  `models.ini` until you say so. `--engine` picks `llama-bench` (the default,
-  faster) or a real `llama-server` request; `--repetitions` controls how many
+  `models.ini` until you say so. Measurement runs through `llama-bench`, the
+  program shipped alongside `llama-server`; `--repetitions` controls how many
   times each setting is measured (default 3); without `-y` and without a
   terminal to ask in, it prints what it would write and changes nothing. It does
   not touch the number of GPU layers or the context size — those are decided
