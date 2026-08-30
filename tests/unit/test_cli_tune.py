@@ -174,6 +174,25 @@ def test_a_cache_change_that_would_not_fit_at_the_serving_context_is_never_measu
     assert "cache f16" not in labels
     assert "baseline" in labels and "flash-attn off" in labels
     assert "4 settings" in result.output
+    # The header naming how many settings will be measured comes before the
+    # sub-line explaining which one was dropped and why, not after it.
+    assert result.output.index("4 settings") < result.output.index("not measuring cache f16")
+
+
+def test_when_nothing_else_fits_the_message_says_so(harness):
+    # Budget sits between what a q8_0 cache needs at this context (3.1 GB) and
+    # what an f16 one needs (5.0 GB), so every non-baseline candidate is
+    # dropped: the batch/ubatch and flash-attn variants share the baseline's
+    # q8_0 cache type and so share its estimate, and the cache variant would
+    # switch to f16. Only the baseline is left to measure.
+    real_header_section(harness, "big-ctx", extra="c = 65536\ncache-type-k = q8_0\n"
+                        "cache-type-v = q8_0\n", machine_ram_gib=8, reserve_gb=6)
+    harness.monkeypatch.setattr(cli, "_measure", _fake_engine(_flat()))
+    result = harness.run("tune", "big-ctx")
+    assert result.exit_code == 0
+    assert "No alternative setting could be measured" in result.output
+    assert "already the fastest" not in result.output
+    assert Preset.load(harness.paths.preset).get("big-ctx", "b") is None
 
 
 def test_a_projector_that_has_moved_is_a_message_not_a_traceback(harness):

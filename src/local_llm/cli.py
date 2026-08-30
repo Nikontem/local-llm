@@ -730,7 +730,7 @@ _UNLOAD_SETTLE_SECONDS = 3.0
 
 @contextmanager
 def _router_out_of_the_way(
-    st: State, yes: bool, quiet: bool, sleep: Callable[[float], None]
+    st: State, yes: bool, quiet: bool, context: tuning.TuningContext
 ) -> Iterator[None]:
     """Unload whatever the router is holding, and put it back whatever happens.
 
@@ -776,7 +776,7 @@ def _router_out_of_the_way(
                 fail(f"Could not unload {name}: {refusal}")
             unloaded.append(name)
         if unloaded:
-            sleep(_UNLOAD_SETTLE_SECONDS)
+            context.sleep(_UNLOAD_SETTLE_SECONDS)
             still_there = [name for name in router.loaded_model_names() if name]
             if still_there:
                 fail(
@@ -852,15 +852,26 @@ def tune(
     profile = tuning_profile.AGENT
     # Silenced under --json so that the output stays a single parsable document.
     say = (lambda message: None) if json_out else out.print
+    requested = tuning_profile.candidates(base)
+    # Buffered rather than printed as they are found, so that the header naming
+    # how many settings will be measured always appears above the sub-lines
+    # explaining which ones were dropped and why, not below them.
+    dropped: list[str] = []
     candidates = _candidates_that_fit(
-        st, preset, name, model_path, profile, tuning_profile.candidates(base), say
+        st, preset, name, model_path, profile, requested, dropped.append
     )
+    # True only when every setting besides the one already in place had to be
+    # dropped, which changes what "nothing to change" means below: nothing was
+    # tried, rather than something was tried and lost.
+    nothing_else_fit = len(candidates) == 1 and len(requested) > 1
 
     context = tuning.TuningContext(say=say, sleep=_sleep)
     if not json_out:
         out.print(f"measuring {name} with llama-bench, {len(candidates)} settings, "
                   f"{repetitions} runs each")
-    with _router_out_of_the_way(st, yes, json_out, _sleep):
+        for message in dropped:
+            out.print(message)
+    with _router_out_of_the_way(st, yes, json_out, context):
         try:
             measurements = _measure(model_path, profile, candidates, context, repetitions)
         except tuning.TuningError as error:
@@ -882,7 +893,13 @@ def tune(
     if best is None:
         fail("Nothing could be measured. See the errors above.")
     if best.candidate.label == tuning.BASELINE:
-        out.print(f"{name} is already the fastest of the settings tried. Nothing to change.")
+        if nothing_else_fit:
+            out.print(
+                f"No alternative setting could be measured: none would fit at {name}'s "
+                "configured context. Nothing to change."
+            )
+        else:
+            out.print(f"{name} is already the fastest of the settings tried. Nothing to change.")
         return
     gain = tuning_report.improvement(best, measurements, profile)
     if gain is None:

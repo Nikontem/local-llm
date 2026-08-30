@@ -162,41 +162,47 @@ only when you know two configured models together fit the budget.
   rather than offered. Output from a 1 GB model:
 
   ```
-  measuring Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M with llama-bench, 5 settings, 2 runs each
+  measuring Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M with llama-bench, 5 settings, 3 runs each
     measuring baseline
     measuring batch 1024/256
     measuring batch 4096/1024
     measuring flash-attn off
     measuring cache q8_0
 
-    batch 4096/1024   b=4096 ub=1024 fa=auto cache=f16                1594 pp/s   158.3    ±1.4 tg/s     4.2 s  -1.7%
-    baseline          b=2048 ub=512 fa=auto cache=f16                 1556 pp/s   157.4    ±1.9 tg/s     4.3 s
-    batch 1024/256    b=1024 ub=256 fa=auto cache=f16                 1514 pp/s   157.0    ±2.2 tg/s     4.3 s  +1.8%
-    cache q8_0        b=2048 ub=512 fa=auto cache=q8_0                1551 pp/s   141.2    ±2.6 tg/s     4.5 s  +4.6%
-    flash-attn off    b=2048 ub=512 fa=off cache=f16                  1347 pp/s   108.9    ±0.8 tg/s     5.4 s  +26.6%
+    baseline          b=2048 ub=512 fa=auto cache=f16                 1414 pp/s   134.2    ±0.4 tg/s     4.8 s
+    batch 4096/1024   b=4096 ub=1024 fa=auto cache=f16                1417 pp/s   127.4    ±3.9 tg/s     4.9 s  +2.0%
+    batch 1024/256    b=1024 ub=256 fa=auto cache=f16                 1351 pp/s   127.7    ±2.7 tg/s     5.0 s  +4.8%
+    cache q8_0        b=2048 ub=512 fa=auto cache=q8_0                1275 pp/s   117.8    ±2.4 tg/s     5.4 s  +12.1%
+    flash-attn off    b=2048 ub=512 fa=off cache=f16                  1202 pp/s   100.3    ±1.7 tg/s     6.0 s  +24.0%
 
     Each setting was measured against the baseline on its own. Combinations of two changed settings were not tried.
     The winner and the last place are what held across repeated runs; a few percent between the rows in between is not meaningful. A busy machine can move these numbers by more than that on its own, so a surprising result is worth measuring again.
 
-  Everything tried was within measurement noise of Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M's current settings: batch 4096/1024, the fastest, was +1.7% against the baseline, and less than 5% does not survive a second run. Nothing to change.
+  Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M is already the fastest of the settings tried. Nothing to change.
   ```
 
-  That last line is the point of the `±` column and the note above it. On this
-  small model the fastest setting was under two percent ahead of what the
-  section already had, which is inside the range the same measurement moves by
-  on its own between runs, so nothing is offered and nothing is written. When a
-  setting really is ahead — five percent or more, which is what `flash-attn
-  off` costing twenty-seven percent looks like from the other direction — the
-  command instead names it, prints the exact `models.ini` lines, and asks
-  whether to write them:
+  Every percentage here reads as "slower than the baseline by this much" —
+  `batch 4096/1024` at +2.0% is the closest thing to a rival, and it still
+  lost. That closeness is exactly what the `±` column is for: its generation
+  rate wobbled by ±3.9 tokens/second across its own three repeated runs, wider
+  than the two-percent gap that supposedly separates it from the baseline, so
+  the difference is noise rather than a finding. The baseline wins outright
+  here, so `local-llm` says so and changes nothing. A closer race, where the
+  fastest setting is not the baseline but still within five percent of it (the
+  margin `tuning_report.MEANINGFUL_MARGIN` sets), gets a similar refusal: the
+  command names the near-tie, explains that a margin that small does not
+  survive a second run, and still writes nothing.
 
-  ```
-  fastest: batch 4096/1024
-    b = 4096
-    ub = 1024
+  When a setting clears that margin, the command instead names it as the
+  fastest, lists the exact `models.ini` lines it would change, and asks
+  before writing them; `--yes` writes them without asking, and with no
+  terminal to ask in and no `--yes`, it prints what it would write and
+  changes nothing instead. That did happen on a larger model: on a 16.5 GB
+  model, `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_XL`, `batch
+  4096/1024` measured at 12.47 seconds a turn against the baseline's 15.71 —
+  comfortably past the five-percent margin — while turning flash attention off
+  cost 17.64 seconds.
 
-  Re-run with --yes to write these into [Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M].
-  ```
 - **`local-llm remove NAME [--delete-files]`** — removes a section, and with
   the flag, the model file(s) it points at, after listing them and asking.
 - **`local-llm edit`** — opens `models.ini` in `$EDITOR` directly; everything
