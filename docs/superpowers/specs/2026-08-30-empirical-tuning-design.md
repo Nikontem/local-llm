@@ -244,9 +244,16 @@ requests, reading the `timings` block llama.cpp returns with each completion.
 
 **Token counts come from the response, not from the request.** The synthetic
 prompt is built to be about 4096 tokens, but "about" is not good enough to
-divide by. The response reports `tokens_evaluated` and `tokens_predicted`, and
-those are what the rates are computed from, so the arithmetic is exact even
-when the prompt is approximate.
+divide by. The counts used are `timings.prompt_n` and `timings.predicted_n`,
+not the top-level `tokens_evaluated` and `tokens_predicted` fields — the
+capture in section 7.4 shows why the distinction matters. With prompt caching
+in play, `tokens_evaluated` is the size of the whole prompt sent with the
+request, including the part already served from cache, while
+`timings.prompt_n` is what the server actually processed on that call. Taking
+the count from `tokens_evaluated` would halve the reported prompt-processing
+rate. So the rates are still computed from what the server says it did, never
+from what the request asked for, but from the field that reflects that work
+specifically.
 
 ### 7.3 What engine B can see that engine A cannot
 
@@ -256,6 +263,62 @@ request slots and continuous batching, the fitter's chosen context rather than
 one implied by the test sizes, cache reuse between turns, and the HTTP layer
 itself. Whether any of that changes which candidate wins is an empirical
 question, and section 8 is how it gets answered instead of argued.
+
+### 7.4 What the two programs actually printed
+
+All of the following was captured on the same machine as the context-sizing
+design — an Apple M4 Pro — running the Homebrew build of llama.cpp reported by
+`llama-server --version` as `version: 0.3.0 (build 10621, commit
+c1d0e7a00)`. The model was `Qwen2.5-1.5B-Instruct-GGUF`, quantized `Q4_K_M`,
+about 1 GB on disk — the small model in the candidate list. Both fixture files
+are the real, unedited output of the two programs, not a hand-written guess at
+their shape.
+
+**`llama-bench -m <path> -o json -r 2 -d 4096 -p 4096 -n 256 -b 2048 -ub 512
+-fa auto -ctk f16 -ctv f16`** wrote a two-element JSON array, one object per
+test. The rate is under `avg_ts`, with `stddev_ts` alongside it. The prompt
+test reports `n_prompt: 4096` and `n_gen: 0`, with `avg_ts: 1563.461981` and
+`stddev_ts: 0.408924`; the generation test reports the reverse, `n_prompt: 0`
+and `n_gen: 256`, with `avg_ts: 151.90858` and `stddev_ts: 2.785915`. Both rows
+carry `n_depth: 4096`, confirming the `-d` flag is echoed back rather than
+silently dropped. `build_number` is `10621`, matching the server's own report.
+
+Two fields are worth a sentence each because they are not what a reading of
+the flags would suggest. `n_gpu_layers` is reported as `-1` on both rows —
+llama.cpp's internal value for "all layers" — even though no `-ngl` flag was
+passed. This confirms the assumption in section 7.1: `llama-bench`'s default
+already offloads every layer, so the candidate list is right to leave `-ngl`
+out rather than pass `all` explicitly. `flash_attn` is reported as the integer
+`-1`, not the string `auto` that was passed on the command line; nothing in
+this design reads that field back, so the mismatch between what was typed and
+what is echoed changes nothing, but it would confuse anyone diffing the
+command against the JSON without knowing to expect it.
+
+**The scratch `llama-server`**, primed with a 4096-token prompt and then sent
+a follow-up request extending that prompt to 8192 tokens with `cache_prompt`
+set, returned a `timings` block of `cache_n: 4096, prompt_n: 4096, prompt_ms:
+4048.998, prompt_per_second: 1011.6083040791821, predicted_n: 256,
+predicted_ms: 2541.674, predicted_per_second: 100.32757938272178`. At the top
+level of the same response, `tokens_evaluated` is `8192` and `tokens_predicted`
+is `256`.
+
+`prompt_n` reading `4096` while the request's full prompt was `8192` tokens is
+the proof that prompt caching did what it was meant to: the follow-up request
+only had to process the new half of the prompt, because the first half was
+already resident from the priming request. `tokens_evaluated`, by contrast,
+counts the whole prompt sent with the request, cached portion included. A rate
+computed from `tokens_evaluated` over `prompt_ms` would divide the same 4049 ms
+by 8192 instead of 4096 tokens and report a prompt-processing rate half the
+true one. That is why section 7.2 takes its counts from `timings.prompt_n` and
+`timings.predicted_n` rather than from the top-level fields — this capture is
+the evidence, not an inference from reading the server's source.
+
+The fixture committed for the server response has its `prompt` and `tokens`
+fields removed: the `prompt` field alone echoed the roughly 8192-word synthetic
+prompt back in full, accounting for about 41 KB of a 43 KB file, and neither
+field is read by anything. `timings`, `tokens_evaluated`, `tokens_predicted`,
+`truncated`, `stop`, and `generation_settings` are untouched, and every value
+under `timings` is byte-for-byte the same as in the original capture.
 
 ## 8. Two engines, one expected survivor
 
