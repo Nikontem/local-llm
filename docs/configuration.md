@@ -78,18 +78,27 @@ reason `--max-models` defaults to 1 (see [Running the router](commands.md#runnin
 
 ## Speed
 
-Four keys in a section affect how fast a model answers, never whether it
-fits — that is still decided by `fit-ctx`/`c` and the machine's memory
-budget, above. `local-llm` leaves `b` (batch size) and `ub` (micro-batch
-size, always at most `b`) at `llama-server`'s own defaults unless
-[`tune`](commands.md#models) has written measured values for them.
+Four keys in a section affect how fast a model answers, and two of them
+affect how much memory it takes as well. `local-llm` leaves `b` (batch size)
+and `ub` (micro-batch size, always at most `b`) at `llama-server`'s own
+defaults unless [`tune`](commands.md#models) has written measured values for
+them; those two size the scratch buffers a forward pass works in, so a much
+larger batch costs a little more memory as well as some speed.
 `flash-attn` turns flash attention on or off; left unset, `llama-server`
 decides for itself. `cache-type-k` and `cache-type-v` set the precision the
 key-value cache is stored at — `f16` (full precision, the implicit default)
 or a quantized type such as `q8_0` (roughly half the memory, some models
-handle it better than others). For a model big enough that its full KV
-cache would be expensive, `pull` and `add` already set both to `q8_0` as an
-estimate, before `tune` ever runs. Whichever of these four keys `tune` has
+handle it better than others) — and that choice changes what the context
+costs directly, because every token in the conversation is stored at that
+precision. Switching a large model from `q8_0` to `f16` nearly doubles the
+memory its context needs. For a model big enough that its full KV cache
+would be expensive, `pull` and `add` already set both to `q8_0` as an
+estimate, before `tune` ever runs, and the `fit-ctx` floor they wrote in the
+same breath was sized on the assumption that the cache stays `q8_0`. That is
+why `tune` will not offer a cache change that would no longer fit: before it
+measures anything, it prices each combination at the section's own `c` or
+`fit-ctx` against the memory budget, and names the ones it is skipping and
+why. Whichever of these four keys `tune` has
 written, the comment above the section names the measurement they came
 from: a value it wrote was timed on the machine it ran on. It is safe to
 carry to another machine — the fitter still governs what actually fits —

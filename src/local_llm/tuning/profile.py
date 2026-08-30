@@ -72,11 +72,14 @@ def candidates(base: Candidate) -> list[Candidate]:
     """The baseline, then each knob varied against it exactly once.
 
     This is a fixed list and not a search. The obvious alternative — sweep one
-    knob, keep the winner, carry it into the next sweep — is path-dependent, and
-    two measurement engines that diverge at the first step never evaluate the
-    same candidate again, which would make the comparison the design document
-    rests on meaningless. It also explores no more of the space than this does,
-    because it varies one knob at a time as well.
+    knob, keep the winner, carry it into the next sweep — explores no more of
+    the combination space than this does, because it also varies one knob at a
+    time, and it gives up two things in exchange for nothing. It is path
+    dependent: one measurement that happens to land badly, on a machine that
+    was briefly busy, steers every measurement after it. And its table can no
+    longer be read the way the printed one is read, as "here is what each
+    setting on its own did to the configuration you have today", because after
+    the first stage the rows are no longer being compared against that.
     """
     result = [base]
     for batch, ubatch in _PAIRS:

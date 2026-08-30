@@ -144,33 +144,53 @@ only when you know two configured models together fit the budget.
   coding agent's: four thousand tokens already in the conversation, four thousand
   more sent, and a short reply. Each setting is measured on its own against your
   current configuration, so a combination of two changes is never tried. Expect
-  ten to twenty minutes on a large model. If the router is holding a model it is
-  unloaded for the duration and reloaded afterwards, because a second copy of a
-  model in memory makes every number meaningless. Nothing is written to
-  `models.ini` until you say so. Measurement runs through `llama-bench`, the
-  program shipped alongside `llama-server`; `--repetitions` controls how many
-  times each setting is measured (default 3); without `-y` and without a
-  terminal to ask in, it prints what it would write and changes nothing. It does
-  not touch the number of GPU layers or the context size — those are decided
-  elsewhere (see [Memory](configuration.md#memory)), because this command tunes
-  speed, not fit. Output from a 1 GB model:
+  about five minutes for six settings on a 16 GB model, and well under a minute
+  on a small one. If the router is holding a model it is unloaded for the
+  duration and reloaded afterwards, because a second copy of a model in memory
+  makes every number meaningless. Nothing is written to `models.ini` until you
+  say so. Measurement runs through `llama-bench`, the program shipped alongside
+  `llama-server`; `--repetitions` controls how many times each setting is
+  measured (default 3); `-y`/`--yes` answers both of the questions this command
+  can ask — unloading a resident model, and writing the winner — so an
+  unattended run needs it; without it and without a terminal to ask in, it
+  prints what it would write and changes nothing. It does not touch the number
+  of GPU layers or the context size — those are decided elsewhere (see
+  [Memory](configuration.md#memory)), because this command tunes speed, not
+  fit. It will also decline to measure a setting it could not write: a
+  `cache-type` change alters what your model's context costs in memory, so a
+  cache the model could not fit at its configured context is named and skipped
+  rather than offered. Output from a 1 GB model:
 
   ```
-  measuring Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M with bench, 5 settings, 2 runs each
+  measuring Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M with llama-bench, 5 settings, 2 runs each
     measuring baseline
     measuring batch 1024/256
     measuring batch 4096/1024
     measuring flash-attn off
     measuring cache q8_0
 
-    batch 4096/1024   b=4096 ub=1024 fa=auto cache=f16                1594 pp/s   158.3 tg/s     4.2 s  -2%
-    baseline          b=2048 ub=512 fa=auto cache=f16                 1556 pp/s   157.4 tg/s     4.3 s
-    batch 1024/256    b=1024 ub=256 fa=auto cache=f16                 1514 pp/s   157.0 tg/s     4.3 s  +2%
-    cache q8_0        b=2048 ub=512 fa=auto cache=q8_0                1551 pp/s   141.2 tg/s     4.5 s  +5%
-    flash-attn off    b=2048 ub=512 fa=off cache=f16                  1347 pp/s   108.9 tg/s     5.4 s  +27%
+    batch 4096/1024   b=4096 ub=1024 fa=auto cache=f16                1594 pp/s   158.3    ±1.4 tg/s     4.2 s  -1.7%
+    baseline          b=2048 ub=512 fa=auto cache=f16                 1556 pp/s   157.4    ±1.9 tg/s     4.3 s
+    batch 1024/256    b=1024 ub=256 fa=auto cache=f16                 1514 pp/s   157.0    ±2.2 tg/s     4.3 s  +1.8%
+    cache q8_0        b=2048 ub=512 fa=auto cache=q8_0                1551 pp/s   141.2    ±2.6 tg/s     4.5 s  +4.6%
+    flash-attn off    b=2048 ub=512 fa=off cache=f16                  1347 pp/s   108.9    ±0.8 tg/s     5.4 s  +26.6%
 
     Each setting was measured against the baseline on its own. Combinations of two changed settings were not tried.
+    The winner and the last place are what held across repeated runs; a few percent between the rows in between is not meaningful. A busy machine can move these numbers by more than that on its own, so a surprising result is worth measuring again.
 
+  Everything tried was within measurement noise of Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M's current settings: batch 4096/1024, the fastest, was +1.7% against the baseline, and less than 5% does not survive a second run. Nothing to change.
+  ```
+
+  That last line is the point of the `±` column and the note above it. On this
+  small model the fastest setting was under two percent ahead of what the
+  section already had, which is inside the range the same measurement moves by
+  on its own between runs, so nothing is offered and nothing is written. When a
+  setting really is ahead — five percent or more, which is what `flash-attn
+  off` costing twenty-seven percent looks like from the other direction — the
+  command instead names it, prints the exact `models.ini` lines, and asks
+  whether to write them:
+
+  ```
   fastest: batch 4096/1024
     b = 4096
     ub = 1024

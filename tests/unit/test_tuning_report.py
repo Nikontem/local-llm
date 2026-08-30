@@ -83,6 +83,54 @@ def test_the_table_names_the_baseline_and_the_change_against_it():
     assert "-" in faster and "%" in faster
 
 
+def test_a_change_under_half_a_percent_is_not_printed_as_minus_zero():
+    # 4096/402 + 256/30 against 4096/400 + 256/30 is a win of a third of a
+    # percent. Rounded to whole percent it renders as "-0%", which reads as a
+    # bug in the tool rather than as the tiny difference it is.
+    rows = report_module.table([_measured(BASE, 400.0, 30.0), _measured(FAST, 402.0, 30.0)], AGENT)
+    faster = [row for row in rows if FAST.label in row][0]
+    assert "-0%" not in faster
+    assert "-0.3%" in faster
+
+
+def test_the_table_shows_the_spread_around_the_generation_rate():
+    steady = Measurement(BASE, 400.0, 30.0, repetitions=3, generation_stddev=0.4)
+    jumpy = Measurement(FAST, 800.0, 30.0, repetitions=3, generation_stddev=6.2)
+    rows = report_module.table([steady, jumpy], AGENT)
+    assert any("±0.4" in row for row in rows)
+    assert any("±6.2" in row for row in rows)
+
+
+def test_a_measurement_with_no_spread_to_report_prints_none():
+    rows = report_module.table([_measured(BASE, 400.0, 30.0)], AGENT)
+    assert "±" not in rows[0]
+
+
+def test_the_margin_is_measured_against_the_baseline():
+    base = _measured(BASE, 400.0, 30.0)
+    fast = _measured(FAST, 800.0, 30.0)
+    gain = report_module.improvement(fast, [base, fast], AGENT)
+    base_seconds = 4096 / 400.0 + 256 / 30.0
+    fast_seconds = 4096 / 800.0 + 256 / 30.0
+    assert round(gain, 6) == round((base_seconds - fast_seconds) / base_seconds, 6)
+    assert gain > report_module.MEANINGFUL_MARGIN
+
+
+def test_a_win_of_one_percent_is_under_the_margin():
+    base = _measured(BASE, 400.0, 30.0)
+    barely = _measured(FAST, 410.0, 30.0)
+    assert 0 < report_module.improvement(barely, [base, barely], AGENT) \
+        < report_module.MEANINGFUL_MARGIN
+
+
+def test_an_unmeasurable_baseline_gives_no_margin_rather_than_a_win():
+    # None and zero must not be confused: with no baseline there is nothing to
+    # compare against, which is not the same as "the winner tied with it".
+    broken = Measurement(BASE, 0.0, 0.0, repetitions=0, error="did not start")
+    fast = _measured(FAST, 800.0, 30.0)
+    assert report_module.improvement(fast, [broken, fast], AGENT) is None
+
+
 def test_a_failed_row_says_so_instead_of_printing_a_rate():
     broken = Measurement(FAST, 0.0, 0.0, repetitions=0, error="did not start")
     rows = report_module.table([_measured(BASE, 400.0, 30.0), broken], AGENT)
@@ -131,9 +179,15 @@ def test_merging_keeps_the_keys_the_section_already_had():
 
 
 def test_the_json_shape_carries_the_rates_and_the_derived_turn():
-    payload = report_module.as_json([_measured(BASE, 400.0, 30.0)], AGENT)
+    payload = report_module.as_json(
+        [Measurement(BASE, 400.0, 30.0, repetitions=3,
+                     prompt_stddev=1.5, generation_stddev=0.4)],
+        AGENT,
+    )
     assert payload[0]["label"] == BASELINE
     assert payload[0]["batch"] == 2048
     assert payload[0]["prompt_rate"] == 400.0
     assert payload[0]["generation_rate"] == 30.0
+    assert payload[0]["prompt_stddev"] == 1.5
+    assert payload[0]["generation_stddev"] == 0.4
     assert round(payload[0]["turn_seconds"], 3) == round(4096 / 400.0 + 256 / 30.0, 3)

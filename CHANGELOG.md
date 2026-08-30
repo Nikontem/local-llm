@@ -9,7 +9,14 @@
   writes into `models.ini` is estimated, never measured. It unloads and
   reloads a model the router is already holding so a second copy in memory
   cannot skew the numbers, and writes nothing to `models.ini` unless you say
-  so.
+  so. It will not measure a cache-type change that the model could no longer
+  fit at its configured context — the cache precision decides what every
+  token in the conversation costs — and it names each combination it skips
+  and why. The table shows the spread `llama-bench` saw across its own
+  repetitions, and a winner less than 5% ahead of your current settings is
+  reported as being within measurement noise rather than offered: on a busy
+  machine the middle of this ranking does not reproduce, so only a visible
+  margin is worth editing a configuration file for.
 
 - The `looking at <repo>` line that `local-llm recommend` and the setup
   wizard's model step print while they scan the Hugging Face Hub is now

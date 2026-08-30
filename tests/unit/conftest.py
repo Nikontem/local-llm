@@ -41,7 +41,7 @@ def harness(tmp_path, monkeypatch):
         f"[floor]\nmodel = {tmp_path}/floor.gguf\nfit-ctx = 16384\n"
     )
     backend = FakeBackend()
-    http = FakeHttp({("GET", "/health"): {"status": "ok"}})
+    http = FakeHttp({("GET", "/health"): {"status": "ok"}}, backend=backend)
     messages: list[str] = []
 
     def make_router(p, s, **kwargs):

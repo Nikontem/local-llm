@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from local_llm.router import ProcInfo
+from local_llm.router import ProcInfo, _alias_of
 
 
 @dataclass
@@ -38,6 +38,25 @@ class FakeBackend:
         proc = FakeProc(pid, list(cmdline), rss, parent, set(listening))
         self.procs[pid] = proc
         return proc
+
+    def drop_child(self, alias: str) -> None:
+        """Take the child serving `alias` down, which is what an accepted unload does.
+
+        A router that answers an unload and leaves the process running is not
+        something any test should be describing. `tune` re-reads the process
+        table after unloading, precisely because the reply on its own is not
+        evidence that the memory came back, so the fake has to model the part
+        that makes that check pass.
+        """
+        for proc in self.procs.values():
+            if _alias_of(proc.cmdline) == alias:
+                proc.alive = False
+
+    def restore_child(self, alias: str) -> None:
+        """The other half: an accepted load brings the child back."""
+        for proc in self.procs.values():
+            if _alias_of(proc.cmdline) == alias:
+                proc.alive = True
 
     def _exit(self, pid: int) -> None:
         proc = self.procs.get(pid)
@@ -100,13 +119,28 @@ class FakeBackend:
 class FakeHttp:
     """Callable matching Router's http hook: (method, path, body) -> dict."""
 
-    def __init__(self, responses: dict[tuple[str, str], dict] | None = None) -> None:
+    def __init__(
+        self,
+        responses: dict[tuple[str, str], dict] | None = None,
+        backend: FakeBackend | None = None,
+    ) -> None:
         self.responses = responses or {}
         self.calls: list[tuple[str, str, dict | None]] = []
+        self.backend = backend
 
     def __call__(self, method: str, path: str, body: dict | None) -> dict:
         self.calls.append((method, path, body))
-        return self.responses.get((method, path), {"success": True})
+        reply = self.responses.get((method, path), {"success": True})
+        # A load or unload the server accepted changes the process table too, and
+        # code that checks the table afterwards has to see the change. A reply
+        # carrying an "error" key is a refusal, and refusals change nothing.
+        if self.backend is not None and isinstance(body, dict) and "error" not in reply:
+            model = body.get("model")
+            if model and path == "/models/unload":
+                self.backend.drop_child(model)
+            elif model and path == "/models/load":
+                self.backend.restore_child(model)
+        return reply
 
 
 class FakeApi:

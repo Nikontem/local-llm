@@ -11,7 +11,7 @@ import sys
 import textwrap
 import time
 import webbrowser
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import date
@@ -97,12 +97,11 @@ _sleep = time.sleep
 _open_url = webbrowser.open
 _which = shutil.which
 
-# The measurement engine, as a mapping so a test can replace it without a
-# subprocess. `tune` previously chose between two engines here; only one
-# remains, kept as a mapping to avoid disturbing the lookup below.
-_ENGINES: dict[str, tuning.EngineFn] = {
-    "bench": tuning_bench.measure,
-}
+# The measurement engine, named here rather than called directly so that a test
+# can put something in its place that does not start llama-bench. There is one
+# engine and the user is never asked to choose; this is a seam for the tests, in
+# the same spirit as `_sleep` above.
+_measure: tuning.EngineFn = tuning_bench.measure
 
 
 def _interactive() -> bool:
@@ -605,35 +604,156 @@ def unload(model: str = typer.Argument(..., autocompletion=complete_model)) -> N
     out.print(json.dumps(reply, separators=(",", ":")))
 
 
-def _refuse_if_it_cannot_fit(st: State, preset: Preset, name: str, model_path: Path,
-                             profile: tuning.Profile) -> None:
-    """Decline rather than measure a model this machine cannot hold.
+def _serving_context(preset: Preset, name: str, profile: tuning.Profile) -> int:
+    """The context this section actually serves at, which is not the one being measured.
 
-    A benchmark that swaps produces confident nonsense, which is the one output a
-    tuning command must never produce.
+    `c` (or its long spelling `ctx-size`) pins the context exactly. `fit-ctx` is
+    a floor instead: `llama-server` picks the real context at load time and may
+    go above it, but never below, so it is the smallest context the section is
+    guaranteed to cost. Read through `Preset.get`, so a value in the `[*]` block
+    counts, and in the same order `agents.py` reads them so the two cannot
+    disagree about what a section serves.
+
+    A section with none of the three leaves the choice entirely to the loader,
+    and there is no number to check anything against. The measurement's own size
+    stands in, which changes no answer — it is what the candidates are being
+    measured at anyway.
+    """
+    for key in ("c", "ctx-size", "fit-ctx"):
+        raw = preset.get(name, key)
+        if not raw:
+            continue
+        try:
+            return int(raw)
+        except ValueError:
+            continue  # Hand-edited nonsense; try the next key rather than stop the command.
+    return profile.total
+
+
+def _candidates_that_fit(
+    st: State,
+    preset: Preset,
+    name: str,
+    model_path: Path,
+    profile: tuning.Profile,
+    candidates: Sequence[tuning.Candidate],
+    say: Callable[[str], None],
+) -> list[tuning.Candidate]:
+    """Refuse a model this machine cannot measure, and drop candidates it could never adopt.
+
+    Two different questions, answered from the same header, which is why they
+    are asked in one place.
+
+    The first is whether the measurement itself fits. A benchmark that swaps
+    produces confident nonsense, which is the one output a tuning command must
+    never produce, so that one ends the command.
+
+    The second is whether the value that would be *written* still fits, which is
+    a different and harder question. The measurement runs at `profile.total`
+    tokens — a few thousand — while the section serves at its `c` or its
+    `fit-ctx`, which for a large model is ten times that or more. Worse, the
+    floor `pull` wrote was computed against a `q8_0` cache (`sections.py` picks
+    that cache for any model over `BIG_MODEL`), so it only holds while the cache
+    stays `q8_0`. An `f16` cache costs nearly twice as much per element: it can
+    measure perfectly well at eight thousand tokens and then leave the model
+    unable to reach its own floor at sixty-five thousand, at which point
+    `llama-server` either refuses or quietly serves something smaller.
+
+    Such a candidate is dropped before it is measured rather than checked after
+    it wins. Measuring a configuration nobody could adopt costs minutes per
+    candidate on a large model, and printing it as the winner and then declining
+    to write it would be a worse experience than never offering it.
+
+    The baseline is never dropped: it is what the section already says, and
+    removing it would leave the run with nothing to rank against. If the
+    baseline genuinely does not fit, that is a problem with the configuration
+    the user already has, and the refusal above is where it surfaces.
+
+    Without a readable header there is no estimate to make, so every candidate
+    is kept and the engine is left to fail honestly on any that cannot load.
     """
     try:
         header = read_header(model_path)
-    except GgufError:
-        return  # No header, no estimate; the engines will fail honestly if it cannot load.
-    machine = detect(reserve_gb=st.settings.reserve_gb)
-    needed = refined_estimate(preset.file_sizes(name), header, profile.total, "f16")
+    except (GgufError, OSError):
+        return list(candidates)
+    try:
+        sizes = preset.file_sizes(name)
+    except PresetError as error:
+        fail(str(error))
+    machine = _machine(st)
+    needed = refined_estimate(sizes, header, profile.total, "f16")
     if needed > machine.budget:
         fail(
             f"{name} needs about {human_gb(needed)} to measure and this machine has "
             f"{human_gb(machine.budget)} usable.\n"
             f"  local-llm doctor    for what is taking the rest"
         )
+    serving = _serving_context(preset, name, profile)
+    kept: list[tuning.Candidate] = []
+    for candidate in candidates:
+        at_serving = refined_estimate(sizes, header, serving, candidate.cache_type)
+        if candidate.label != tuning.BASELINE and at_serving > machine.budget:
+            say(
+                f"  not measuring {candidate.label}: it would need {human_gb(at_serving)} at "
+                f"{name}'s {serving}-token context and this machine has "
+                f"{human_gb(machine.budget)} usable"
+            )
+            continue
+        kept.append(candidate)
+    return kept
+
+
+def _router_refusal(reply: dict) -> str | None:
+    """What a router reply says went wrong, or None if it says nothing did.
+
+    `llama-server` answers a load or unload it will not do with an HTTP error
+    status and a JSON body explaining why, and `Router`'s HTTP helper returns
+    that body rather than raising — most callers want to show the user whatever
+    the server said, and only a dead connection is exceptional. A caller that
+    needs to know whether the thing actually happened, rather than to print the
+    answer, has to look inside the reply, which is what this does.
+    """
+    if not isinstance(reply, dict):
+        return None
+    error = reply.get("error")
+    if error is None:
+        return None
+    if isinstance(error, dict):
+        return str(error.get("message") or error)
+    return str(error)
+
+
+# Long enough for a large model's pages to be handed back after its process
+# exits, short enough to be invisible against a run measured in minutes.
+_UNLOAD_SETTLE_SECONDS = 3.0
 
 
 @contextmanager
-def _router_out_of_the_way(st: State, yes: bool, quiet: bool):
+def _router_out_of_the_way(
+    st: State, yes: bool, quiet: bool, sleep: Callable[[float], None]
+) -> Iterator[None]:
     """Unload whatever the router is holding, and put it back whatever happens.
 
     The reload is registered before the first measurement runs, so a crashed
     engine, a server that never comes up, or an interrupted run all still leave
     the router holding what it held before. The router process itself is never
     stopped, so its port keeps answering throughout.
+
+    An unload the router refused is a failure even though nothing was raised.
+    Its HTTP helper turns an error *status* into an ordinary reply body (see
+    `_router_refusal`), so a refusal that went unread would be added to the
+    reload list and the benchmark would start with the model still resident —
+    producing exactly the contaminated numbers this whole dance exists to
+    prevent. The process table is consulted afterwards as well, because the
+    reply is only the router's opinion and the child process is the fact.
+
+    Memory is not free the instant an unload returns, either: the child has to
+    exit and the system has to reclaim its pages. The baseline is always the
+    first candidate measured, so anything still resident is charged to the one
+    number every other row is compared against — a plausible part of why the
+    design document's comparison run saw its baseline move by twenty percent
+    between two runs. Hence the short settle wait, which costs seconds against a
+    run that costs minutes.
     """
     router = st.router()
     resident: list[str] = []
@@ -648,27 +768,58 @@ def _router_out_of_the_way(st: State, yes: bool, quiet: bool):
     try:
         for name in resident:
             try:
-                router.unload_model(name)
+                reply = router.unload_model(name)
             except RouterError as error:
                 fail(f"Could not unload {name}: {error}")
+            refusal = _router_refusal(reply)
+            if refusal:
+                fail(f"Could not unload {name}: {refusal}")
             unloaded.append(name)
+        if unloaded:
+            sleep(_UNLOAD_SETTLE_SECONDS)
+            still_there = [name for name in router.loaded_model_names() if name]
+            if still_there:
+                fail(
+                    f"The router is still holding {', '.join(still_there)} after being asked "
+                    "to unload it, and a second copy of a model in memory makes every "
+                    "measurement meaningless.\n"
+                    "  local-llm status    to see what is resident"
+                )
         yield
     finally:
         for name in unloaded:
             try:
-                router.load_model(name)
+                reply = router.load_model(name)
             except RouterError as error:
                 err.print(f"warning: {name} could not be reloaded: {error}")
+                continue
+            refusal = _router_refusal(reply)
+            if refusal:
+                err.print(f"warning: {name} could not be reloaded: {refusal}")
 
 
-def _tuning_comments(preset: Preset, name: str, best, profile: tuning.Profile) -> list[str]:
-    """The section's existing comments plus one line saying where the new numbers came from."""
+_TUNED_COMMENT = "tuned by local-llm"
+
+
+def _tuning_comments(
+    preset: Preset, name: str, best: tuning.Measurement, profile: tuning.Profile
+) -> list[str]:
+    """The section's existing comments plus one line saying where the new numbers came from.
+
+    A note left by a previous run is replaced, not joined. `Preset.comments`
+    hands back everything the section owns, that line included, so appending
+    would leave a second run's file carrying two dates and two winners — one of
+    them describing settings no longer in the section — and a third run three.
+    That is unbounded growth in the one file this tool tells people to open and
+    edit by hand.
+    """
     seconds = tuning.turn_time(best, profile)
     note = (
-        f"tuned by local-llm on {date.today().isoformat()}: {best.candidate.label}, "
+        f"{_TUNED_COMMENT} on {date.today().isoformat()}: {best.candidate.label}, "
         f"{seconds:.1f}s for a {profile.prompt}-token turn at depth {profile.depth}"
     )
-    return [*preset.comments(name), note]
+    kept = [line for line in preset.comments(name) if not line.startswith(_TUNED_COMMENT)]
+    return [*kept, note]
 
 
 @app.command()
@@ -679,7 +830,8 @@ def tune(
     ),
     json_out: bool = typer.Option(False, "--json", help="Print the measurements as JSON."),
     yes: bool = typer.Option(
-        False, "-y", "--yes", help="Write the winning settings without asking."
+        False, "-y", "--yes",
+        help="Unload a resident model and write the winning settings without asking.",
     ),
 ) -> None:
     """Measure how fast a model answers under different settings, and offer to keep the best."""
@@ -697,17 +849,20 @@ def tune(
         fail(f"The model file is missing: {model_path}")
 
     base = tuning_profile.baseline(preset, name)
-    candidates = tuning_profile.candidates(base)
     profile = tuning_profile.AGENT
-    _refuse_if_it_cannot_fit(st, preset, name, model_path, profile)
+    # Silenced under --json so that the output stays a single parsable document.
+    say = (lambda message: None) if json_out else out.print
+    candidates = _candidates_that_fit(
+        st, preset, name, model_path, profile, tuning_profile.candidates(base), say
+    )
 
-    context = tuning.TuningContext(say=(lambda message: None) if json_out else out.print)
+    context = tuning.TuningContext(say=say, sleep=_sleep)
     if not json_out:
-        out.print(f"measuring {name} with bench, {len(candidates)} settings, "
+        out.print(f"measuring {name} with llama-bench, {len(candidates)} settings, "
                   f"{repetitions} runs each")
-    with _router_out_of_the_way(st, yes, json_out):
+    with _router_out_of_the_way(st, yes, json_out, _sleep):
         try:
-            measurements = _ENGINES["bench"](model_path, profile, candidates, context, repetitions)
+            measurements = _measure(model_path, profile, candidates, context, repetitions)
         except tuning.TuningError as error:
             fail(str(error))
 
@@ -720,6 +875,7 @@ def tune(
         out.print(row)
     out.print("")
     out.print(f"  {tuning_report.INTERACTIONS_NOTE}")
+    out.print(f"  {tuning_report.REPRODUCIBILITY_NOTE}")
     out.print("")
 
     best = tuning_report.winner(measurements, profile)
@@ -727,6 +883,23 @@ def tune(
         fail("Nothing could be measured. See the errors above.")
     if best.candidate.label == tuning.BASELINE:
         out.print(f"{name} is already the fastest of the settings tried. Nothing to change.")
+        return
+    gain = tuning_report.improvement(best, measurements, profile)
+    if gain is None:
+        out.print(
+            f"The baseline could not be measured, so there is nothing to compare "
+            f"{best.candidate.label} against. Nothing written."
+        )
+        return
+    if gain < tuning_report.MEANINGFUL_MARGIN:
+        # Ranking always produces a first row. Writing it into someone's file on
+        # a margin this small would be presenting run-to-run noise as a finding.
+        out.print(
+            f"Everything tried was within measurement noise of {name}'s current settings: "
+            f"{best.candidate.label}, the fastest, was {gain:+.1%} against the baseline, and "
+            f"less than {tuning_report.MEANINGFUL_MARGIN:.0%} does not survive a second run. "
+            "Nothing to change."
+        )
         return
     changes = tuning_report.changed_keys(best.candidate, preset, name)
     if not changes:
