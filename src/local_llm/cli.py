@@ -12,7 +12,9 @@ import textwrap
 import time
 import webbrowser
 from collections.abc import Sequence
+from contextlib import contextmanager
 from dataclasses import asdict
+from datetime import date
 from importlib import resources
 from pathlib import Path
 from typing import NoReturn
@@ -20,7 +22,7 @@ from typing import NoReturn
 import typer
 from rich.console import Console
 
-from . import __version__, harnesses
+from . import __version__, harnesses, tuning
 from .agents import (
     AgentError,
     aider_args,
@@ -67,6 +69,10 @@ from .shellrc import (
     shadowed_aliases,
     upsert_block,
 )
+from .tuning import bench as tuning_bench
+from .tuning import profile as tuning_profile
+from .tuning import report as tuning_report
+from .tuning import server as tuning_server
 from .uninstall import (
     KEYS,
     delete_model_file,
@@ -91,6 +97,13 @@ err = Console(stderr=True, highlight=False, soft_wrap=True, markup=False)
 _sleep = time.sleep
 _open_url = webbrowser.open
 _which = shutil.which
+
+# The two measurement engines, as a mapping so a test can replace one without a
+# subprocess and so `--engine` has exactly one place to look them up.
+_ENGINES: dict[str, tuning.EngineFn] = {
+    "bench": tuning_bench.measure,
+    "server": tuning_server.measure,
+}
 
 
 def _interactive() -> bool:
@@ -591,6 +604,153 @@ def unload(model: str = typer.Argument(..., autocompletion=complete_model)) -> N
     except RouterError as error:
         fail(str(error))
     out.print(json.dumps(reply, separators=(",", ":")))
+
+
+def _refuse_if_it_cannot_fit(st: State, preset: Preset, name: str, model_path: Path,
+                             profile: tuning.Profile) -> None:
+    """Decline rather than measure a model this machine cannot hold.
+
+    A benchmark that swaps produces confident nonsense, which is the one output a
+    tuning command must never produce.
+    """
+    try:
+        header = read_header(model_path)
+    except GgufError:
+        return  # No header, no estimate; the engines will fail honestly if it cannot load.
+    machine = detect(reserve_gb=st.settings.reserve_gb)
+    needed = refined_estimate(preset.file_sizes(name), header, profile.total, "f16")
+    if needed > machine.budget:
+        fail(
+            f"{name} needs about {human_gb(needed)} to measure and this machine has "
+            f"{human_gb(machine.budget)} usable.\n"
+            f"  local-llm doctor    for what is taking the rest"
+        )
+
+
+@contextmanager
+def _router_out_of_the_way(st: State, yes: bool, quiet: bool):
+    """Unload whatever the router is holding, and put it back whatever happens.
+
+    The reload is registered before the first measurement runs, so a crashed
+    engine, a server that never comes up, or an interrupted run all still leave
+    the router holding what it held before. The router process itself is never
+    stopped, so its port keeps answering throughout.
+    """
+    router = st.router()
+    resident: list[str] = []
+    if router.is_running():
+        resident = [name for name in router.loaded_model_names() if name]
+    if resident and not quiet:
+        out.print(f"the router is holding {', '.join(resident)}; unloading while measuring")
+    if resident and not yes and _interactive():
+        if not typer.confirm("Unload and reload afterwards?", default=True):
+            raise typer.Exit(1)
+    for name in resident:
+        try:
+            router.unload_model(name)
+        except RouterError as error:
+            fail(f"Could not unload {name}: {error}")
+    try:
+        yield
+    finally:
+        for name in resident:
+            try:
+                router.load_model(name)
+            except RouterError as error:
+                err.print(f"warning: {name} could not be reloaded: {error}")
+
+
+def _tuning_comments(preset: Preset, name: str, best, profile: tuning.Profile) -> list[str]:
+    """The section's existing comments plus one line saying where the new numbers came from."""
+    seconds = tuning.turn_time(best, profile)
+    note = (
+        f"tuned by local-llm on {date.today().isoformat()}: {best.candidate.label}, "
+        f"{seconds:.1f}s for a {profile.prompt}-token turn at depth {profile.depth}"
+    )
+    return [*preset.comments(name), note]
+
+
+@app.command()
+def tune(
+    model: str = typer.Argument(..., autocompletion=complete_model, help="Model to measure."),
+    engine: str = typer.Option(
+        "bench", "--engine", help="Which measurement to use: bench (llama-bench) or server."
+    ),
+    repetitions: int = typer.Option(
+        3, "--repetitions", help="How many times each setting is measured."
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Print the measurements as JSON."),
+    yes: bool = typer.Option(
+        False, "-y", "--yes", help="Write the winning settings without asking."
+    ),
+) -> None:
+    """Measure how fast a model answers under different settings, and offer to keep the best."""
+    if engine not in _ENGINES:
+        fail(f"Unknown engine: {engine}\n  choose one of: {', '.join(sorted(_ENGINES))}")
+    st = state()
+    preset = st.preset()
+    try:
+        name = resolve_model(model, preset, st.settings)
+    except AgentError as error:
+        fail(str(error))
+    raw_path = preset.get(name, "model")
+    if not raw_path:
+        fail(f"[{name}] has no model path, so there is nothing to measure.")
+    model_path = Path(raw_path)
+    if not model_path.exists():
+        fail(f"The model file is missing: {model_path}")
+
+    base = tuning_profile.baseline(preset, name)
+    candidates = tuning_profile.candidates(base)
+    profile = tuning_profile.AGENT
+    _refuse_if_it_cannot_fit(st, preset, name, model_path, profile)
+
+    context = tuning.TuningContext(say=(lambda message: None) if json_out else out.print)
+    if not json_out:
+        out.print(f"measuring {name} with {engine}, {len(candidates)} settings, "
+                  f"{repetitions} runs each")
+    with _router_out_of_the_way(st, yes, json_out):
+        try:
+            measurements = _ENGINES[engine](model_path, profile, candidates, context, repetitions)
+        except tuning.TuningError as error:
+            fail(str(error))
+
+    if json_out:
+        out.print(json.dumps(tuning_report.as_json(measurements, profile), indent=2))
+        return
+
+    out.print("")
+    for row in tuning_report.table(measurements, profile):
+        out.print(row)
+    out.print("")
+    out.print(f"  {tuning_report.INTERACTIONS_NOTE}")
+    out.print("")
+
+    best = tuning_report.winner(measurements, profile)
+    if best is None:
+        fail("Nothing could be measured. See the errors above.")
+    if best.candidate.label == tuning.BASELINE:
+        out.print(f"{name} is already the fastest of the settings tried. Nothing to change.")
+        return
+    changes = tuning_report.changed_keys(best.candidate, preset, name)
+    if not changes:
+        out.print(f"{name} is already the fastest of the settings tried. Nothing to change.")
+        return
+
+    out.print(f"fastest: {best.candidate.label}")
+    for key, value in changes:
+        out.print(f"  {key} = {value}")
+    if not yes:
+        if not _interactive():
+            out.print(f"\nRe-run with --yes to write these into [{name}].")
+            return
+        if not typer.confirm(f"\nWrite these into [{name}] in {st.paths.preset}?", default=True):
+            return
+    preset.replace_section(name, tuning_report.merged_keys(preset, name, changes),
+                           _tuning_comments(preset, name, best, profile))
+    preset.save(st.paths.preset)
+    out.print(f"written to {st.paths.preset}")
+    _after_preset_change(st, name, added=False)
 
 
 # ---------------------------------------------------------------- agents
