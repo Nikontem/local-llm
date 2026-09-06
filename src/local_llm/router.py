@@ -230,7 +230,7 @@ class Router:
 
     # ------------------------------------------------------------ arguments
 
-    def reads_key_from_environment(self) -> bool:
+    def reads_key_from_environment(self) -> bool | None:
         """Does this llama-server take the API key from the environment?
 
         A build old enough not to know the variable would start with no authentication
@@ -253,6 +253,8 @@ class Router:
             "--models-autoload",
             "--ui" if s.ui else "--no-ui",
         ]
+        if s.no_thinking:
+            args += ["--chat-template-kwargs", json.dumps({"enable_thinking": False})]
         if s.api_key and not self.reads_key_from_environment():
             # The fallback, and the reason doctor reports which one is in effect: on
             # this build the key has nowhere else to go. See server_env.

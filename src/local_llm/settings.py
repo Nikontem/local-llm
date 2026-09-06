@@ -49,6 +49,7 @@ class Settings:
     default_model: str = ""
     allow_remote: bool = False
     api_key: str = ""
+    no_thinking: bool = False
 
     @property
     def openai_base_url(self) -> str:

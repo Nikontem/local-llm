@@ -252,6 +252,9 @@ def up(
     max_models: int | None = typer.Option(
         None, "--max-models", min=0, help="How many models may stay loaded at once (0 = unlimited)."
     ),
+    no_thinking: bool = typer.Option(
+        False, "--no-thinking", help="Disable model's thinking-capable models."
+    ),
 ) -> None:
     """Start the router in the background and write a timestamped log."""
     st = state()
@@ -259,6 +262,8 @@ def up(
         st.settings.ui = ui
     if max_models is not None:
         st.settings.max_models = max_models
+    if no_thinking is not None:
+        st.settings.no_thinking = no_thinking
     router = st.router()
     if foreground:
         out.print("Starting router in the foreground. Ctrl-C to stop.")
