@@ -237,3 +237,68 @@ def test_edit_opens_the_preset(harness):
 def test_complete_model_reads_the_preset(harness):
     assert cli.complete_model("b") == ["big"]
     assert cli.complete_model("") == ["big", "small", "floor"]
+
+
+def test_up_context_and_no_thinking_reach_the_router_command_line(harness):
+    h = harness
+    h.backend.spawn_listening = {5678}
+    result = h.run("up", "--context", "262144", "--reasoning")
+    assert result.exit_code == 0, result.output
+    args, _ = h.backend.spawned[0]
+    assert args[args.index("--ctx-size") + 1] == "262144"
+    assert args[args.index("--chat-template-kwargs") + 1] == '{"enable_thinking": false}'
+    assert "context:  262144 for every model (--context)" in result.output
+    assert "thinking: off (--reasoning)" in result.output
+    h.run("down")
+    h.run("up")
+    args, _ = h.backend.spawned[1]
+    assert "--ctx-size" not in args and "--chat-template-kwargs" not in args
+
+
+def test_up_reads_the_overrides_from_the_environment(harness):
+    h = harness
+    h.backend.spawn_listening = {5678}
+    h.monkeypatch.setenv("LOCAL_LLM_CONTEXT", "65536")
+    h.monkeypatch.setenv("LOCAL_LLM_NO_THINKING", "true")
+    h.run("up")
+    args, _ = h.backend.spawned[0]
+    assert args[args.index("--ctx-size") + 1] == "65536"
+    assert "--chat-template-kwargs" in args
+
+
+def test_restart_keeps_the_overrides_unless_told_otherwise(harness):
+    h = harness
+    h.backend.add(
+        42,
+        ["/opt/bin/llama-server", "--port", "5678", "--ctx-size", "262144",
+         "--chat-template-kwargs", '{"enable_thinking": false}'],
+        listening={5678},
+    )
+    h.paths.ensure_state_dirs()
+    h.paths.pid_file.write_text("42\n")
+    h.paths.ui_file.write_text("0\n")
+    h.backend.spawn_listening = {5678}
+    result = h.run("restart")
+    assert result.exit_code == 0, result.output
+    args, _ = h.backend.spawned[0]
+    assert args[args.index("--ctx-size") + 1] == "262144"
+    assert "--chat-template-kwargs" in args
+    h.run("down")
+    h.backend.add(42, ["/opt/bin/llama-server", "--port", "5678", "--ctx-size", "262144"],
+                  listening={5678})
+    h.paths.pid_file.write_text("42\n")
+    result = h.run("restart", "--context", "0", "--thinking")
+    assert result.exit_code == 0, result.output
+    args, _ = h.backend.spawned[1]
+    assert "--ctx-size" not in args and "--chat-template-kwargs" not in args
+
+
+def test_status_names_the_overrides_in_effect(harness):
+    h = harness
+    running_router(h)
+    assert "context:" not in h.run("status").output
+    assert "thinking:" not in h.run("status").output
+    h.backend.procs[42].cmdline += ["--ctx-size", "131072", "--chat-template-kwargs", "{}"]
+    result = h.run("status")
+    assert "context:  131072 for every model (--context)" in result.output
+    assert "thinking: off (--reasoning)" in result.output

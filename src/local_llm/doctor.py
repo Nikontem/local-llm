@@ -372,7 +372,7 @@ def run_checks(
     # agents
     from . import harnesses
     from .integrations import HarnessContext
-    from .integrations.codex import codex_paths, configured_base_url
+    from .integrations.codex import codex_paths, configured_base_url, legacy_in_config
 
     installed, missing = harnesses.detect(env.which)
     context = HarnessContext(
@@ -401,6 +401,14 @@ def run_checks(
         checks.append(Check(
             "codex config", "warn",
             f"{codex_file.config_file} points at {written}, not {settings.openai_base_url}",
+            fix="local-llm integrate codex",
+        ))
+    legacy = legacy_in_config(codex_file)
+    if legacy:
+        checks.append(Check(
+            "codex profile", "warn",
+            f"{codex_file.config_file} still holds {', '.join(legacy)}, which Codex 0.134+"
+            " refuses to start with",
             fix="local-llm integrate codex",
         ))
     return checks

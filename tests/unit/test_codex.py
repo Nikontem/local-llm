@@ -12,8 +12,11 @@ def test_paths_default_and_codex_home(tmp_path):
     assert paths.config_dir == tmp_path / ".codex"
     assert paths.config_file == tmp_path / ".codex" / "config.toml"
     assert paths.backup == tmp_path / ".codex" / "config.toml.local-llm.bak"
+    assert paths.profile_file == tmp_path / ".codex" / "local-llm.config.toml"
+    assert paths.profile_backup == tmp_path / ".codex" / "local-llm.config.toml.local-llm.bak"
     moved = codex.codex_paths(home=tmp_path, env={"CODEX_HOME": str(tmp_path / "elsewhere")})
     assert moved.config_file == tmp_path / "elsewhere" / "config.toml"
+    assert moved.profile_file == tmp_path / "elsewhere" / "local-llm.config.toml"
 
 
 def test_provider_table_omits_env_key_without_an_api_key():
@@ -62,7 +65,8 @@ def test_write_preserves_everything_else_and_keeps_a_backup(tmp_path):
     codex.write(paths, codex.provider_table(Settings()), codex.profile_table("small"))
     text = paths.config_file.read_text()
     assert '[model_providers.local-llm]' in text and 'wire_api = "responses"' in text
-    assert '[profiles.local-llm]' in text
+    assert "[profiles.local-llm]" not in text, "the table Codex 0.134+ refuses"
+    assert paths.profile_file.read_text() == 'model = "small"\nmodel_provider = "local-llm"\n'
 
     # Everything above the first table we own is byte for byte what it was.
     head = text[: text.index("[model_providers.local-llm]")]
@@ -95,11 +99,29 @@ def test_drop_removes_only_our_tables(tmp_path):
     paths.config_file.write_text(EXISTING)
     codex.write(paths, codex.provider_table(Settings()), codex.profile_table("small"))
     removed = codex.drop(paths)
-    assert removed == ["[model_providers.local-llm]", "[profiles.local-llm]"]
+    assert removed == ["[model_providers.local-llm]"]
     text = paths.config_file.read_text()
     assert "local-llm" not in text
     assert "# my codex config" in text and "[model_providers.other]" in text
+    assert "[profiles.work]" in text
     assert codex.drop(paths) == []
+    assert paths.profile_file.is_file(), "drop is config.toml only; drop_profile is the rest"
+
+
+def test_drop_takes_out_a_legacy_profile_too(tmp_path):
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True)
+    paths.config_file.write_text(
+        'profile = "local-llm"\n\n[model_providers.local-llm]\nname = "local-llm"\n\n'
+        '[profiles.local-llm]\nmodel = "small"\n\n[profiles.work]\nmodel = "gpt-5"\n'
+    )
+    assert codex.drop(paths) == [
+        "[model_providers.local-llm]",
+        "[profiles.local-llm]",
+        'profile = "local-llm"',
+    ]
+    text = paths.config_file.read_text()
+    assert "local-llm" not in text and "[profiles.work]" in text
 
 
 def test_drop_keeps_a_parent_table_that_holds_a_comment(tmp_path):
@@ -147,8 +169,132 @@ def test_configure_writes_then_reports_already(tmp_path):
     assert any("codex --profile local-llm" in line for line in lines)
     assert any("experimental" in line for line in lines)
     paths = codex.codex_paths(home=tmp_path, env={})
-    assert 'model = "small"' in paths.config_file.read_text()
+    assert 'model = "small"' in paths.profile_file.read_text()
+    assert 'model = "small"' not in paths.config_file.read_text()
     assert any("already" in line for line in codex.configure(ctx))
+
+
+def test_configure_writes_the_profile_as_its_own_file(tmp_path):
+    """Codex 0.134+ reads a profile from <name>.config.toml with top-level keys, and
+    refuses to start when a [profiles.<name>] table is in config.toml instead."""
+    codex.configure(make_ctx(tmp_path))
+    paths = codex.codex_paths(home=tmp_path, env={})
+    assert paths.config_file.read_text() == (
+        "[model_providers.local-llm]\n"
+        'name = "local-llm"\n'
+        'base_url = "http://127.0.0.1:5678/v1"\n'
+        'wire_api = "responses"\n'
+    )
+    assert paths.profile_file.read_text() == 'model = "small"\nmodel_provider = "local-llm"\n'
+
+
+def test_configure_moves_a_legacy_profile_out_of_config_toml(tmp_path):
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True)
+    legacy = (
+        'model = "gpt-5"\nprofile = "local-llm"\n\n'
+        "[model_providers.local-llm]\n"
+        'name = "local-llm"\nbase_url = "http://127.0.0.1:5678/v1"\nwire_api = "responses"\n\n'
+        '[profiles.local-llm]\nmodel = "small"\nmodel_provider = "local-llm"\n'
+    )
+    paths.config_file.write_text(legacy)
+    provider = codex.provider_table(Settings())
+    assert codex.status(paths, provider, codex.profile_table("small")) == "different"
+
+    refusing = make_ctx(tmp_path, yes=False, answers=[False])
+    assert codex.configure(refusing) == ["left as it is"]
+    assert paths.config_file.read_text() == legacy and not paths.profile_file.exists()
+
+    lines = codex.configure(make_ctx(tmp_path, yes=False, answers=[True]))
+    text = paths.config_file.read_text()
+    assert "[profiles." not in text and "profile = " not in text
+    assert 'model = "gpt-5"' in text and "[model_providers.local-llm]" in text
+    assert paths.profile_file.read_text() == 'model = "small"\nmodel_provider = "local-llm"\n'
+    moved = [line for line in lines if line.startswith("moved the profile out of")]
+    assert moved and "[profiles.local-llm]" in moved[0] and 'profile = "local-llm"' in moved[0]
+    assert paths.backup.read_text() == legacy
+    assert any("already" in line for line in codex.configure(make_ctx(tmp_path)))
+
+
+def test_status_spans_both_files(tmp_path):
+    paths = codex.codex_paths(home=tmp_path, env={})
+    provider = codex.provider_table(Settings())
+    profile = codex.profile_table("small")
+    codex.write(paths, provider, profile)
+    assert codex.status(paths, provider, profile) == "same"
+
+    paths.profile_file.write_text('model = "other"\nmodel_provider = "local-llm"\n')
+    assert codex.status(paths, provider, profile) == "different"
+
+    paths.profile_file.unlink()
+    assert codex.status(paths, provider, profile) == "different"
+
+    codex.write(paths, provider, profile)
+    paths.config_file.write_text(
+        paths.config_file.read_text() + '\n[profiles.local-llm]\nmodel = "small"\n'
+    )
+    assert codex.status(paths, provider, profile) == "different", "a remnant is never same"
+
+    paths.profile_file.write_text("[oops\n")
+    assert codex.status(paths, provider, profile) == "unreadable"
+
+
+def test_an_unparsable_profile_file_is_reported_not_rewritten(tmp_path):
+    ctx = make_ctx(tmp_path)
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True)
+    paths.profile_file.write_text("[oops\n")
+    lines = codex.configure(ctx)
+    assert paths.profile_file.read_text() == "[oops\n"
+    assert not paths.config_file.exists(), "neither file is written when one is broken"
+    assert any(str(paths.profile_file) in line and "not rewritten" in line for line in lines)
+    assert any('model_provider = "local-llm"' in line for line in lines)
+
+
+def test_a_symlinked_profile_file_is_written_through(tmp_path):
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True)
+    real = tmp_path / "dotfiles-profile.toml"
+    real.write_text('model = "old"\nmodel_provider = "local-llm"\n')
+    paths.profile_file.symlink_to(real)
+
+    codex.write(paths, codex.provider_table(Settings()), codex.profile_table("small"))
+
+    assert paths.profile_file.is_symlink()
+    assert real.read_text() == 'model = "small"\nmodel_provider = "local-llm"\n'
+    assert paths.profile_backup.read_text() == 'model = "old"\nmodel_provider = "local-llm"\n'
+
+
+def test_removal_deletes_the_profile_file_and_both_backups(tmp_path):
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True)
+    paths.config_file.write_text(EXISTING)
+    provider, profile = codex.provider_table(Settings()), codex.profile_table("small")
+    codex.write(paths, provider, profile)
+    codex.write(paths, provider, codex.profile_table("other"))  # makes the profile backup
+    assert paths.backup.is_file() and paths.profile_backup.is_file()
+
+    lines = codex.removal_lines(paths)
+
+    assert not paths.profile_file.exists() and not paths.profile_backup.exists()
+    assert not paths.backup.exists()
+    assert "local-llm" not in paths.config_file.read_text()
+    assert any(line == f"deleted {paths.profile_file}" for line in lines)
+    assert any(line == f"deleted {paths.profile_backup}" for line in lines)
+
+
+def test_a_profile_file_naming_another_provider_is_left_alone(tmp_path):
+    paths = codex.codex_paths(home=tmp_path, env={})
+    paths.config_dir.mkdir(parents=True)
+    theirs = 'model = "gpt-5"\nmodel_provider = "openai"\n'
+    paths.profile_file.write_text(theirs)
+    assert codex.removal_lines(paths) == []
+    assert paths.profile_file.read_text() == theirs
+
+    paths.profile_file.write_text("[oops\n")
+    lines = codex.removal_lines(paths)
+    assert any("does not parse" in line and "by hand" in line for line in lines)
+    assert paths.profile_file.read_text() == "[oops\n"
 
 
 def test_configure_without_models_writes_the_provider_only(tmp_path):
@@ -156,6 +302,7 @@ def test_configure_without_models_writes_the_provider_only(tmp_path):
     lines = codex.configure(ctx)
     paths = codex.codex_paths(home=tmp_path, env={})
     assert "[profiles.local-llm]" not in paths.config_file.read_text()
+    assert not paths.profile_file.exists()
     assert any("no model in models.ini" in line for line in lines)
 
 
@@ -312,11 +459,12 @@ def test_a_symlinked_config_stays_a_symlink(tmp_path):
 def test_the_written_line_names_a_profile_only_when_one_was_written(tmp_path):
     lines = codex.configure(make_ctx(tmp_path, models=()))
     assert any(line.startswith("provider local-llm written to") for line in lines)
-    assert not any("provider and profile" in line for line in lines)
+    assert not any("profile written to" in line for line in lines)
     assert any("no model in models.ini" in line for line in lines)
 
     with_model = codex.configure(make_ctx(tmp_path / "other", models=("small",)))
-    assert any("provider and profile local-llm written to" in line for line in with_model)
+    written = [line for line in with_model if line.startswith("provider local-llm written to")]
+    assert written and "profile written to" in written[0] and "local-llm.config.toml" in written[0]
 
 
 def test_a_stray_profile_with_no_provider_still_counts_as_configured(tmp_path):
@@ -375,6 +523,7 @@ def test_a_config_that_held_only_our_tables_is_removed_not_emptied(tmp_path):
     lines = codex.removal_lines(paths)
 
     assert not paths.config_file.exists(), paths.config_file.read_text()
+    assert not paths.profile_file.exists(), "the profile file is ours from start to end"
     assert any("removed" in line and str(paths.config_file) in line for line in lines)
     assert not paths.backup.exists()
 

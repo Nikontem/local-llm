@@ -156,3 +156,22 @@ def test_remove_while_running_does_not_suggest_loading_it(hubbed):
     result = h.run("remove", f"{REPO}:Q8_0", "--yes")
     assert result.exit_code == 0, result.output
     assert "reloaded its model list" in result.output and "local-llm load" not in result.output
+
+
+def test_load_budgets_against_the_router_context_override_not_the_section(harness):
+    """With `up --context N` every model loads at N whatever its section says,
+    so the estimate - and the refusal it can produce - must use N too."""
+    h = harness
+    from local_llm import cli
+    from local_llm.estimate import GIB
+    h.backend.add(
+        42, ["/opt/bin/llama-server", "--port", "5678", "--ctx-size", "262144"], listening={5678}
+    )
+    h.paths.ensure_state_dirs()
+    h.paths.pid_file.write_text("42\n")
+    h.monkeypatch.setattr(cli, "total_ram", lambda: 48 * GIB)
+    write_gguf(h.tmp / "big.gguf", QWEN38)
+    h.paths.preset.write_text(f"[big]\nmodel = {h.tmp}/big.gguf\nc = 65536\ncache-type-k = q8_0\n")
+    result = h.run("load", "big")
+    assert result.exit_code == 0, result.output
+    assert "weights + KV cache at c=262144 (router --context)" in result.output

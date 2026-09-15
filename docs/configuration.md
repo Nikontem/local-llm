@@ -24,7 +24,13 @@ Every key also has an environment variable, which wins over the file:
 `LOCAL_LLM_ALLOW_REMOTE`. Precedence, highest first: a command's own flag
 (where one exists, e.g. `--max-models`), then the environment variable, then
 `settings.toml`, then the built-in default. The API key
-(`LOCAL_LLM_API_KEY`) is environment-only and never written to disk.
+(`LOCAL_LLM_API_KEY`) is environment-only and never written to disk. So are
+`LOCAL_LLM_CONTEXT` and `LOCAL_LLM_NO_THINKING`, the environment forms of
+`up --context` and `up --reasoning`: both apply to every model the router
+spawns and a pinned context switches off the load-time fitting for every
+section, so they are things you ask for on a run, not preferences a file
+keeps applying after you have forgotten it is there (see
+[Overrides for one run](commands.md#overrides-for-one-run)).
 
 ## Files
 
@@ -37,6 +43,7 @@ Every key also has an environment variable, which wins over the file:
 | Logs | `STATE/logs/` | `LOCAL_LLM_LOG_DIR` |
 | Downloaded model files | the standard Hugging Face cache | `HF_HOME`, `HF_HUB_CACHE` |
 | Codex provider (when configured) | `~/.codex/config.toml` | `CODEX_HOME` |
+| Codex profile (when configured) | `~/.codex/local-llm.config.toml` | `CODEX_HOME` |
 
 `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` are honoured for the first two rows
 when set.
@@ -69,7 +76,10 @@ exactly `N` and switches off that load-time adjustment for the section, at
 the cost of `llama-server` refusing to shrink it if memory is tight. `local-llm
 doctor` names any section still using `c` (see
 [Running the router](commands.md#running-the-router)) so it is easy to find
-and switch over.
+and switch over. To pin a context for one run without editing any section,
+start the router with `up --context N`: it applies to every model and takes
+precedence over both keys (see
+[Overrides for one run](commands.md#overrides-for-one-run)).
 
 `load`'s budget check only guards explicit loads, honestly: a chat request
 naming an unloaded model, or the web UI, bypasses it, and `llama-server`

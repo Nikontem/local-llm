@@ -343,6 +343,28 @@ def test_inventory_finds_the_codex_tables(tmp_path):
     assert "Codex" in inv.summary("integrations")
 
 
+def test_inventory_lists_the_profile_file(tmp_path):
+    """The profile file is ours by name alone, found with or without our provider table."""
+    paths = populate(tmp_path)
+    codex_dir = tmp_path / ".codex"
+    (codex_dir / "config.toml").write_text('model = "gpt-5"\n')
+    profile = codex_dir / "local-llm.config.toml"
+    profile.write_text('model = "b"\nmodel_provider = "local-llm"\n')
+    backup = codex_dir / "local-llm.config.toml.local-llm.bak"
+    backup.write_text('model = "a"\nmodel_provider = "local-llm"\n')
+
+    inv = inventory(paths, home=tmp_path, env={})
+    assert inv.codex_config is None
+    assert inv.codex_profile == profile and inv.codex_profile_backup == backup
+    assert "Codex provider and profile" in inv.summary("integrations")
+    assert "backup copies" in inv.summary("integrations")
+
+    lines = remove_integrations(inv, ctx_for(tmp_path), delete_backups=True)
+    assert not profile.exists() and not backup.exists()
+    assert any(line == f"deleted {profile}" for line in lines)
+    assert (codex_dir / "config.toml").read_text() == 'model = "gpt-5"\n'
+
+
 def test_remove_integrations_strips_only_our_codex_tables(tmp_path):
     populate(tmp_path)
     inv = inventory(Paths.from_env(env={}, home=tmp_path), home=tmp_path, env={})

@@ -1,4 +1,13 @@
-"""Codex CLI: a named model provider and a profile inside Codex's own config.toml."""
+"""Codex CLI: a named model provider in Codex's config.toml, and a profile file beside it.
+
+Codex 0.134 moved profiles out of config.toml. A profile is now its own file,
+`<name>.config.toml` in the same directory, holding top-level keys that layer over the
+base config; a `[profiles.<name>]` table or a top-level `profile = "<name>"` selector
+left in config.toml makes `codex --profile <name>` refuse to start at all. The provider
+still lives in config.toml, the only place Codex looks for `model_providers`. Earlier
+versions of this tool wrote the table, so configure moves it out and uninstall knows
+to take both files back.
+"""
 
 from __future__ import annotations
 
@@ -16,8 +25,11 @@ from ..settings import Settings
 from . import HarnessContext, atomic_write, backup_path, remote_note
 
 PROVIDER_ID = "local-llm"
+PROFILE_NAME = f"{PROVIDER_ID}.config.toml"
 WIRE_API = "responses"  # Codex dropped the older "chat" wire format in February 2026
 KEY_VARIABLE = "LOCAL_LLM_API_KEY"
+#: Every top-level table this tool has ever written into config.toml. `profiles` is
+#: legacy: nothing writes it any more, but it is still ours to find and to remove.
 PARENTS = ("model_providers", "profiles")
 EXPERIMENTAL = (
     "experimental: needs a recent llama.cpp build; tool calls may fail on older ones"
@@ -28,12 +40,17 @@ EXPERIMENTAL = (
 class CodexPaths:
     config_dir: Path
     config_file: Path
+    profile_file: Path
 
     @property
     def backup(self) -> Path:
         """Our own name, not the plain .bak somebody may have made by hand: uninstall
         deletes this file, and it must never be able to delete a person's own copy."""
         return backup_path(self.config_file)
+
+    @property
+    def profile_backup(self) -> Path:
+        return backup_path(self.profile_file)
 
 
 def codex_paths(
@@ -42,12 +59,20 @@ def codex_paths(
     env = os.environ if env is None else env
     home = home or Path(env.get("HOME") or Path.home())
     directory = Path(env.get("CODEX_HOME") or home / ".codex")
-    return CodexPaths(config_dir=directory, config_file=directory / "config.toml")
+    return CodexPaths(
+        config_dir=directory,
+        config_file=directory / "config.toml",
+        profile_file=directory / PROFILE_NAME,
+    )
 
 
 def paths_for(config_file: Path) -> CodexPaths:
     """The same record built from a file we already found, so nothing is re-derived."""
-    return CodexPaths(config_dir=config_file.parent, config_file=config_file)
+    return CodexPaths(
+        config_dir=config_file.parent,
+        config_file=config_file,
+        profile_file=config_file.parent / PROFILE_NAME,
+    )
 
 
 def provider_table(settings: Settings) -> dict[str, str]:
@@ -63,6 +88,8 @@ def provider_table(settings: Settings) -> dict[str, str]:
 
 
 def profile_table(model: str) -> dict[str, str]:
+    """The whole of the profile file: it layers over config.toml, so it needs only what
+    differs, and that is the model and the provider serving it."""
     return {"model": model, "model_provider": PROVIDER_ID}
 
 
@@ -84,18 +111,36 @@ def _unwrap(value: object) -> dict | None:
     return unwrap() if unwrap is not None else dict(value)  # type: ignore[arg-type]
 
 
-#: Everything that stops us reading config.toml: bad TOML (ParseError), bytes that are
+#: Everything that stops us reading a TOML file: bad TOML (ParseError), bytes that are
 #: not UTF-8 (UnicodeDecodeError), or a file we are not allowed to open (OSError).
 UNREADABLE = (ParseError, OSError, UnicodeDecodeError)
 
 
-def _document(paths: CodexPaths):
+def _parse(file: Path):
     """The parsed file, or None when it does not exist. Raises anything in UNREADABLE."""
-    if not paths.config_file.is_file():
+    if not file.is_file():
         return None
     # TOML is UTF-8 by definition. Without saying so, a valid config with an accented
     # comment is read in the locale's encoding and reported as unparsable.
-    return tomlkit.parse(paths.config_file.read_text(encoding="utf-8"))
+    return tomlkit.parse(file.read_text(encoding="utf-8"))
+
+
+def _document(paths: CodexPaths):
+    return _parse(paths.config_file)
+
+
+def _profile_document(paths: CodexPaths):
+    return _parse(paths.profile_file)
+
+
+def _problem(file: Path) -> str | None:
+    try:
+        _parse(file)
+    except ParseError as error:
+        return f"line {error.line}, column {error.col}: {error}"
+    except (OSError, UnicodeDecodeError) as error:
+        return f"cannot be read: {error}"
+    return None
 
 
 def _ours(doc, parent_name: str) -> dict | None:
@@ -110,6 +155,25 @@ def _ours(doc, parent_name: str) -> dict | None:
     if not hasattr(parent, "get"):
         return None
     return _unwrap(parent.get(PROVIDER_ID))
+
+
+def legacy_remnants(doc) -> list[str]:
+    """What an older version of this tool left in config.toml that Codex now refuses."""
+    names = []
+    if _ours(doc, "profiles") is not None:
+        names.append(f"[profiles.{PROVIDER_ID}]")
+    if doc.get("profile") == PROVIDER_ID:
+        names.append(f'profile = "{PROVIDER_ID}"')
+    return names
+
+
+def legacy_in_config(paths: CodexPaths) -> list[str]:
+    """The same, read from disk, for doctor. Nothing when the file cannot be read."""
+    try:
+        doc = _document(paths)
+    except UNREADABLE:
+        return []
+    return [] if doc is None else legacy_remnants(doc)
 
 
 def wrong_shape(paths: CodexPaths) -> str | None:
@@ -136,28 +200,46 @@ def wrong_shape(paths: CodexPaths) -> str | None:
 
 
 def parse_problem(paths: CodexPaths) -> str | None:
-    """None when the file can be read (or is absent), else why it cannot be."""
+    """None when config.toml can be read (or is absent), else why it cannot be."""
+    return _problem(paths.config_file)
+
+
+def profile_problem(paths: CodexPaths) -> str | None:
+    """None when the profile file can be read (or is absent), else why it cannot be."""
+    return _problem(paths.profile_file)
+
+
+def current_profile(paths: CodexPaths) -> dict | None:
+    """What the profile file says, or None when there is none or it cannot be read."""
     try:
-        _document(paths)
-    except ParseError as error:
-        return f"line {error.line}, column {error.col}: {error}"
-    except (OSError, UnicodeDecodeError) as error:
-        return f"cannot be read: {error}"
-    return None
+        doc = _profile_document(paths)
+    except UNREADABLE:
+        return None
+    return None if doc is None else _unwrap(doc)
+
+
+def profile_is_ours(profile: Mapping | None) -> bool:
+    return profile is not None and profile.get("model_provider") == PROVIDER_ID
 
 
 def status(paths: CodexPaths, provider: dict, profile: dict | None) -> str:
     try:
         doc = _document(paths)
+        current = _profile_document(paths)
     except UNREADABLE:
         return "unreadable"
-    # Either table counts as "it exists". Judging on the provider alone called a stray
-    # [profiles.local-llm] "missing" and overwrote it with no diff and no question.
-    if doc is None or all(_ours(doc, name) is None for name in PARENTS):
+    ours = None if doc is None else _ours(doc, "model_providers")
+    legacy = [] if doc is None else legacy_remnants(doc)
+    # Anything of ours in either file counts as "it exists". Judging on the provider
+    # alone called a stray profile "missing" and overwrote it with no diff and no
+    # question.
+    if ours is None and not legacy and current is None:
         return "missing"
-    same_provider = _ours(doc, "model_providers") == provider
-    same_profile = profile is None or _ours(doc, "profiles") == profile
-    return "same" if same_provider and same_profile else "different"
+    same_provider = ours == provider
+    same_profile = profile is None or (current is not None and _unwrap(current) == profile)
+    # A legacy table is never "same", however well the rest matches: Codex will not
+    # start until it is gone, and configure is what takes it out.
+    return "same" if same_provider and same_profile and not legacy else "different"
 
 
 def mentions_us(paths: CodexPaths) -> bool:
@@ -186,6 +268,12 @@ def has_tables(paths: CodexPaths) -> bool:
     return doc is not None and any(_ours(doc, name) is not None for name in PARENTS)
 
 
+def has_profile_file(paths: CodexPaths) -> bool:
+    """Is there a profile file to take back? Ours by its name: nothing else writes
+    local-llm.config.toml, and one that will not parse is still ours to report."""
+    return paths.profile_file.is_file() or paths.profile_file.is_symlink()
+
+
 def configured_base_url(paths: CodexPaths) -> str | None:
     try:
         doc = _document(paths)
@@ -206,55 +294,102 @@ def _set(doc, parent_name: str, values: dict) -> None:
     parent[PROVIDER_ID] = child
 
 
-def render(provider: dict, profile: dict | None) -> str:
-    """Just the tables we own, for printing when the file must not be written."""
+def render_profile(profile: dict) -> str:
     doc = tomlkit.document()
-    _set(doc, "model_providers", provider)
-    if profile is not None:
-        _set(doc, "profiles", profile)
+    for name, value in profile.items():
+        doc[name] = value
     return tomlkit.dumps(doc)
 
 
+def render(provider: dict, profile: dict | None) -> str:
+    """Just what we own, in both files, for a diff or for printing when a file must
+    not be written. The profile file follows its name, since it is a file of its own."""
+    doc = tomlkit.document()
+    _set(doc, "model_providers", provider)
+    text = tomlkit.dumps(doc)
+    if profile is not None:
+        text += f"\n# {PROFILE_NAME}:\n" + render_profile(profile)
+    return text
+
+
 def current_render(paths: CodexPaths) -> str:
+    """What is on disk now, in the shape render() gives, so the two diff cleanly."""
     try:
         doc = _document(paths)
+        current = _profile_document(paths)
     except UNREADABLE:
         return ""
     provider = None if doc is None else _ours(doc, "model_providers")
-    if provider is None:
+    if provider is None and current is None:
         return ""
-    return render(provider, _ours(doc, "profiles"))
+    out = tomlkit.document()
+    if doc is not None and doc.get("profile") == PROVIDER_ID:
+        out["profile"] = PROVIDER_ID  # a scalar, so it has to come before any table
+    if provider is not None:
+        _set(out, "model_providers", provider)
+    legacy = None if doc is None else _ours(doc, "profiles")
+    if legacy is not None:
+        _set(out, "profiles", legacy)
+    text = tomlkit.dumps(out)
+    if current is not None:
+        text += f"\n# {PROFILE_NAME}:\n" + tomlkit.dumps(current)
+    return text
 
 
-def write(paths: CodexPaths, provider: dict, profile: dict | None) -> None:
+def write_profile(paths: CodexPaths, profile: dict) -> None:
+    atomic_write(paths.profile_file, render_profile(profile))
+
+
+def write(paths: CodexPaths, provider: dict, profile: dict | None) -> list[str]:
+    """Write the provider into config.toml and the profile into its own file.
+
+    Any legacy profile table goes in the same rewrite: leaving it would make Codex
+    refuse the very profile that was just written. Names what was taken out, so the
+    caller can say the profile moved rather than silently vanished.
+    """
     doc = _document(paths)
     if doc is None:
         doc = tomlkit.document()
     _set(doc, "model_providers", provider)
-    if profile is not None:
-        _set(doc, "profiles", profile)
+    moved = _drop_legacy(doc)
     atomic_write(paths.config_file, tomlkit.dumps(doc))
+    if profile is not None:
+        write_profile(paths, profile)
+    return moved
+
+
+def _drop_table(doc, parent_name: str) -> bool:
+    parent = doc.get(parent_name)
+    # Not a mapping means nothing of ours is under it, whatever it is. See _ours.
+    if not hasattr(parent, "get") or PROVIDER_ID not in parent:
+        return False
+    del parent[PROVIDER_ID]
+    # An emptied table goes too, unless the person left a comment inside it.
+    if not len(parent) and not tomlkit.dumps(parent).strip():
+        del doc[parent_name]
+    return True
+
+
+def _drop_legacy(doc) -> list[str]:
+    removed = []
+    if _drop_table(doc, "profiles"):
+        removed.append(f"[profiles.{PROVIDER_ID}]")
+    if doc.get("profile") == PROVIDER_ID:
+        del doc["profile"]
+        removed.append(f'profile = "{PROVIDER_ID}"')
+    return removed
 
 
 def drop(paths: CodexPaths) -> list[str]:
-    """Delete our tables, leaving everything else alone. Names what it removed."""
+    """Delete our tables from config.toml, leaving everything else alone. Names what
+    it removed."""
     doc = _document(paths)
     if doc is None:
         return []
     removed: list[str] = []
-    for parent_name in PARENTS:
-        parent = doc.get(parent_name)
-        # Not a mapping means nothing of ours is under it, whatever it is. See _ours.
-        if not hasattr(parent, "get") or PROVIDER_ID not in parent:
-            continue
-        del parent[PROVIDER_ID]
-        removed.append(f"[{parent_name}.{PROVIDER_ID}]")
-        # An emptied table goes too, unless the person left a comment inside it.
-        if not len(parent) and not tomlkit.dumps(parent).strip():
-            del doc[parent_name]
-    if doc.get("profile") == PROVIDER_ID:
-        del doc["profile"]
-        removed.append(f'profile = "{PROVIDER_ID}"')
+    if _drop_table(doc, "model_providers"):
+        removed.append(f"[model_providers.{PROVIDER_ID}]")
+    removed += _drop_legacy(doc)
     if removed:
         rest = tomlkit.dumps(doc)
         if rest.strip() or paths.config_file.is_symlink():
@@ -268,6 +403,34 @@ def drop(paths: CodexPaths) -> list[str]:
             # machine put back the way it was found.
             paths.config_file.unlink(missing_ok=True)
     return removed
+
+
+def drop_profile(paths: CodexPaths) -> list[str]:
+    """Delete the profile file and its backup, saying what happened. For uninstall.
+
+    The file is ours by its name and is only ever read by `codex --profile local-llm`,
+    which stops meaning anything once the provider is gone, so anything a person added
+    to it does not keep it. One that names another provider is theirs, and stays. One
+    that will not parse cannot be judged, so it is named for deleting by hand.
+    """
+    lines: list[str] = []
+    problem = profile_problem(paths)
+    if problem is not None:
+        lines.append(f"{paths.profile_file} does not parse ({problem}): delete it by hand")
+    elif profile_is_ours(current_profile(paths)):
+        try:
+            # A symlink is unlinked, never followed: the target is somebody's own file.
+            paths.profile_file.unlink()
+            lines.append(f"deleted {paths.profile_file}")
+        except OSError as error:
+            lines.append(f"could not delete {paths.profile_file}: {error}")
+    if paths.profile_backup.exists() or paths.profile_backup.is_symlink():
+        try:
+            paths.profile_backup.unlink()
+            lines.append(f"deleted {paths.profile_backup}")
+        except OSError as error:
+            lines.append(f"could not delete {paths.profile_backup}: {error}")
+    return lines
 
 
 def configure(ctx: HarnessContext) -> list[str]:
@@ -295,9 +458,12 @@ def _configure(ctx: HarnessContext) -> list[str]:
         ]
 
     if state == "unreadable":
+        broken, problem = paths.config_file, parse_problem(paths)
+        if problem is None:
+            broken, problem = paths.profile_file, profile_problem(paths)
         return [
-            f"{paths.config_file} does not parse ({parse_problem(paths)}),"
-            " so it is not rewritten. Paste this into it:",
+            f"{broken} does not parse ({problem}), so it is not rewritten. Paste this"
+            " into it:",
             render(provider, profile).rstrip(),
         ]
 
@@ -317,15 +483,27 @@ def _configure(ctx: HarnessContext) -> list[str]:
                     )
                 )
             )
-            if not ctx.ask(f"Replace the local-llm tables in {paths.config_file}?", True):
+            where = f"{paths.config_file} and {paths.profile_file}"
+            if not ctx.ask(f"Replace the local-llm settings in {where}?", True):
                 return ["left as it is"]
         try:
-            write(paths, provider, profile)
+            moved = write(paths, provider, profile)
         except UNREADABLE as error:
             # A read-only home, a full disk or somebody else's file: say so, never raise.
             return [f"could not update {paths.config_file}: {error}"]
-        written = "provider" if profile is None else "provider and profile"
-        lines.append(f"{written} local-llm written to {paths.config_file}")
+        if profile is None:
+            lines.append(f"provider local-llm written to {paths.config_file}")
+        else:
+            lines.append(
+                f"provider local-llm written to {paths.config_file};"
+                f" profile written to {paths.profile_file}"
+            )
+        if moved:
+            lines.append(
+                f"moved the profile out of {paths.config_file} into"
+                f" {paths.profile_file}: removed {', '.join(moved)}"
+                " (Codex 0.134+ refuses the old table)"
+            )
 
     if profile is None:
         lines.append("no model in models.ini yet, so no profile was written")
@@ -351,15 +529,23 @@ def remove(ctx: HarnessContext) -> list[str]:
 
 
 def removal_lines(paths: CodexPaths) -> list[str]:
-    """Delete our tables and say what happened, for uninstall."""
+    """Delete our tables and the profile file, and say what happened, for uninstall.
+
+    The two files are judged separately: a config.toml that will not parse is no
+    reason to leave a profile file that is entirely ours, and the other way round.
+    """
+    return _removal_from_config(paths) + drop_profile(paths)
+
+
+def _removal_from_config(paths: CodexPaths) -> list[str]:
     problem = parse_problem(paths)
     if problem is not None:
         if not mentions_us(paths):
             return []  # somebody else's broken config: nothing of ours in it to discuss
         return [
             f"{paths.config_file} does not parse ({problem}), so it is not rewritten:"
-            f" delete its [model_providers.{PROVIDER_ID}] and [profiles.{PROVIDER_ID}]"
-            " tables by hand"
+            f" delete its [model_providers.{PROVIDER_ID}] table, and any"
+            f" [profiles.{PROVIDER_ID}] table or profile = \"{PROVIDER_ID}\" line, by hand"
         ]
     try:
         removed = drop(paths)

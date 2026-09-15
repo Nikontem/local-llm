@@ -24,6 +24,12 @@ Symptoms you are likely to hit, and what each one usually means.
   repository's Hugging Face page, then `hf auth login`.
 - **`hf token` warns "present but invalid"** — the cached token is stale;
   run `hf auth login --force`.
+- **Codex says `--profile local-llm cannot be used while ~/.codex/config.toml
+  contains legacy profile = "local-llm" or [profiles.local-llm] config`** —
+  Codex 0.134 moved profiles into their own files, and an earlier version of
+  this tool wrote the table Codex now refuses. Run `local-llm integrate codex`:
+  it moves the profile into `~/.codex/local-llm.config.toml` and takes the
+  table out of `config.toml`. `local-llm doctor` reports the same leftover.
 - **A model won't load / "Compute error" mid-request** — almost always two
   models resident at once on a GPU that only has room for one; see
   [Memory](configuration.md#memory). Lower `--max-models` back to 1, or `local-llm unload`

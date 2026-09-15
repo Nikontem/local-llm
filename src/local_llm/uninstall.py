@@ -14,7 +14,7 @@ from pathlib import Path
 from .estimate import human_gb
 from .harnesses import PROVIDER, REGISTRY
 from .integrations import HarnessContext, atomic_write, backup_path
-from .integrations.codex import codex_paths, has_tables, unparsable_but_ours
+from .integrations.codex import codex_paths, has_profile_file, has_tables, unparsable_but_ours
 from .integrations.opencode import (
     CONFIG_CANDIDATES,
     current_tiny_model,
@@ -71,6 +71,8 @@ class Inventory:
     rc_backups: list[Path] = field(default_factory=list)
     codex_config: Path | None = None
     codex_backup: Path | None = None
+    codex_profile: Path | None = None
+    codex_profile_backup: Path | None = None
     state_dir: Path | None = None
     settings_file: Path | None = None
     preset_files: list[Path] = field(default_factory=list)
@@ -100,9 +102,14 @@ class Inventory:
                 parts.append("shell aliases")
             if self.completion_files or self.rc_with_bash_source:
                 parts.append("completion")
-            if self.codex_config:
+            if self.codex_config or self.codex_profile:
                 parts.append("Codex provider and profile")
-            if self.agent_backup or self.codex_backup or self.rc_backups:
+            if (
+                self.agent_backup
+                or self.codex_backup
+                or self.codex_profile_backup
+                or self.rc_backups
+            ):
                 parts.append("the backup copies we made")
             return ", ".join(parts) or "nothing"
         if key == "state":
@@ -203,6 +210,10 @@ def inventory(
     # leave a copy of somebody's configuration on the disk for good.
     if cx.backup.is_file():
         inv.codex_backup = cx.backup
+    if has_profile_file(cx):
+        inv.codex_profile = cx.profile_file
+    if cx.profile_backup.is_file():
+        inv.codex_profile_backup = cx.profile_backup
 
     for shell, relative in _COMPLETION_FILES.items():
         completion = home / relative
@@ -395,6 +406,10 @@ def remove_integrations(
     if inv.codex_config:
         # Removing our tables writes a fresh one, which the inventory could not have seen.
         backups.add(backup_path(inv.codex_config))
+    if inv.codex_profile_backup:
+        backups.add(inv.codex_profile_backup)
+    if inv.codex_profile:
+        backups.add(backup_path(inv.codex_profile))
     rc_files = {*inv.rc_with_block, *inv.rc_with_bash_source}
     if restore_retired:
         rc_files.update(inv.rc_with_retired)

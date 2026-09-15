@@ -75,7 +75,10 @@ REGISTRY: tuple[Harness, ...] = (
         title="OpenAI Codex CLI",
         binary="codex",
         kind=PROVIDER,
-        summary="~/.codex/config.toml: provider and profile local-llm (experimental)",
+        summary=(
+            "~/.codex/config.toml + local-llm.config.toml: provider and profile local-llm"
+            " (experimental)"
+        ),
         alias=("codex_local", "codex --profile local-llm"),
         configure=codex_integration.configure,
         remove=codex_integration.remove,

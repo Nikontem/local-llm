@@ -253,6 +253,14 @@ class Router:
             "--models-autoload",
             "--ui" if s.ui else "--no-ui",
         ]
+        # Both of these are router-level flags on purpose. llama-server applies its
+        # own command line to every model it spawns and it wins over the same key in
+        # the model's section - the merged preset it reports shows the section's `c`
+        # replaced, verified on 0.4.0 - so no derived copy of models.ini is needed.
+        # The same rule is also the cost: `--chat-template-kwargs` here replaces a
+        # section's own `chat-template-kwargs` rather than merging with it.
+        if s.context > 0:
+            args += ["--ctx-size", str(s.context)]
         if s.no_thinking:
             args += ["--chat-template-kwargs", json.dumps({"enable_thinking": False})]
         if s.api_key and not self.reads_key_from_environment():
@@ -317,6 +325,26 @@ class Router:
     def ui_state(self) -> bool:
         f = self.paths.ui_file
         return f.is_file() and f.read_text().strip() == "1"
+
+    def overrides(self) -> tuple[int, bool]:
+        """The (context, no_thinking) the running router was started with, from its
+        own command line rather than a state file, so `status` reports what the
+        models are actually served with and `restart` carries exactly that forward.
+        (0, False) when nothing is running or nothing was overridden."""
+        pid = self.pid()
+        if pid is None:
+            return 0, False
+        info = self.backend.info(pid)
+        if info is None:
+            return 0, False
+        context = 0
+        for i, arg in enumerate(info.cmdline):
+            if arg in ("--ctx-size", "-c") and i + 1 < len(info.cmdline):
+                try:
+                    context = int(info.cmdline[i + 1])
+                except ValueError:
+                    context = 0
+        return context, "--chat-template-kwargs" in info.cmdline
 
     def write_ui_state(self, on: bool) -> None:
         self.paths.ensure_state_dirs()

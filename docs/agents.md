@@ -9,7 +9,7 @@ configures the ones you pick. The same menu is step 6 of `local-llm setup`.
 
 ```
   Configured inside the agent
-   1. OpenAI Codex CLI    ~/.codex/config.toml: provider and profile local-llm (experimental)
+   1. OpenAI Codex CLI    ~/.codex/config.toml + local-llm.config.toml: provider and profile local-llm (experimental)
    2. opencode            plugin listing every model, and a tiny helper agent   · configured
 
   Launched through local-llm
@@ -27,18 +27,28 @@ configures the ones you pick. The same menu is step 6 of `local-llm setup`.
 own configuration file, so it offers the router's models every time it starts,
 with no help from this tool.
 
-- **OpenAI Codex CLI** — writes `[model_providers.local-llm]` and
-  `[profiles.local-llm]` into `~/.codex/config.toml` (or `$CODEX_HOME`), then
-  run `codex --profile local-llm`, or the `codex_local` alias. The file is
-  parsed and rewritten, so your comments and every other provider survive; a
-  `.bak` is kept, and a file that does not parse is never touched.
+- **OpenAI Codex CLI** — writes `[model_providers.local-llm]` into
+  `~/.codex/config.toml` (or `$CODEX_HOME`) and the profile, two top-level
+  keys, into `~/.codex/local-llm.config.toml` beside it, then run
+  `codex --profile local-llm`, or the `codex_local` alias. Codex 0.134 and
+  later keep each profile in its own `<name>.config.toml` and refuse to start
+  when a `[profiles.<name>]` table is still in `config.toml`; if an earlier
+  version of this tool left one there, `integrate codex` moves it out and says
+  so, and `doctor` warns about it. `config.toml` is parsed and rewritten, so
+  your comments and every other provider survive; a `.bak` of each file is
+  kept, and a file that does not parse is never touched.
   **This one is experimental.** Codex speaks only the OpenAI Responses API,
   and llama.cpp's `/v1/responses` endpoint does not yet match what Codex sends
   — the compatibility work is an open, unmerged llama.cpp pull request. Plain
   chat may work while tool calls fail, depending on how recent your
   `llama-server` is. Note too that Codex reads a project-level
   `.codex/config.toml` in preference to the one in your home directory, so if
-  one repository ignores the local provider, look there first.
+  one repository ignores the local provider, look there first. Codex asks
+  for reasoning on every request (`model_reasoning_effort` in its config);
+  a router started with `local-llm up --reasoning` overrides that for
+  every model, so a `codex --profile local-llm` session against it gets
+  answers with no thinking (see
+  [Overrides for one run](commands.md#overrides-for-one-run)).
 - **opencode** — copies `resources/opencode-plugin.js` to
   `~/.config/opencode/plugins/local-llm-models.js`, which builds a provider
   with one model per `models.ini` section at opencode's own start-up, and adds

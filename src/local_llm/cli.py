@@ -215,8 +215,19 @@ def _print_up(st: State) -> None:
     out.print(f"  url:      {s.openai_base_url}")
     if s.ui:
         out.print(f"  web ui:   http://{s.host}:{s.port}/    (local-llm ui to open it)")
+    _print_overrides(s.context, s.no_thinking)
     out.print("  models:   local-llm models")
     out.print("  logs:     local-llm logs -f")
+
+
+def _print_overrides(context: int, no_thinking: bool) -> None:
+    """The two router-level flags that apply to every model regardless of its
+    section. Printed only when in effect, so the default output stays as the
+    docs show it, and so a pinned 262144 cannot sit there unnoticed."""
+    if context > 0:
+        out.print(f"  context:  {context} for every model (--context)")
+    if no_thinking:
+        out.print("  thinking: off (--reasoning)")
 
 
 def _start(st: State, router: Router) -> None:
@@ -252,8 +263,12 @@ def up(
     max_models: int | None = typer.Option(
         None, "--max-models", min=0, help="How many models may stay loaded at once (0 = unlimited)."
     ),
-    no_thinking: bool = typer.Option(
-        False, "--no-thinking", help="Disable model's thinking-capable models."
+    context: int | None = typer.Option(
+        None, "--context", min=0,
+        help="Context size for every model, overriding models.ini (0 = as configured).",
+    ),
+    no_thinking: bool | None = typer.Option(
+        None, "--reasoning/--thinking", help="Turn thinking off for every model."
     ),
 ) -> None:
     """Start the router in the background and write a timestamped log."""
@@ -262,6 +277,8 @@ def up(
         st.settings.ui = ui
     if max_models is not None:
         st.settings.max_models = max_models
+    if context is not None:
+        st.settings.context = context
     if no_thinking is not None:
         st.settings.no_thinking = no_thinking
     router = st.router()
@@ -296,13 +313,27 @@ def restart(
     max_models: int | None = typer.Option(
         None, "--max-models", min=0, help="How many models may stay loaded at once (0 = unlimited)."
     ),
+    context: int | None = typer.Option(
+        None, "--context", min=0,
+        help="Context size for every model, overriding models.ini (0 = as configured).",
+    ),
+    no_thinking: bool | None = typer.Option(
+        None, "--reasoning/--thinking", help="Turn thinking off, or back on, for every model."
+    ),
 ) -> None:
-    """Stop and start the router, keeping the UI mode and reloading resident models."""
+    """Stop and start the router, keeping the UI mode, the context and thinking
+    overrides, and reloading resident models."""
     st = state()
     router = st.router()
     st.settings.ui = router.ui_state() if ui is None else ui
     if max_models is not None:
         st.settings.max_models = max_models
+    # The overrides come from the running process itself, so a restart without
+    # the flags serves the models exactly as before rather than silently dropping
+    # a pinned context or turning thinking back on.
+    running_context, running_no_thinking = router.overrides()
+    st.settings.context = running_context if context is None else context
+    st.settings.no_thinking = running_no_thinking if no_thinking is None else no_thinking
     keep = router.loaded_model_names() if restore else []
     _stop(router)
     _sleep(1)
@@ -347,6 +378,7 @@ def status() -> None:
         out.print("  web ui:   off  (local-llm restart --ui)")
     out.print(f"  health:   {health}")
     out.print(f"  config:   {st.paths.preset}")
+    _print_overrides(*router.overrides())
     out.print()
     kids = router.children()
     statuses: dict[str, str] = {}
@@ -452,7 +484,7 @@ def ui(
             out.print("Left running as it is.")
             raise typer.Exit(1)
     # Called as a plain function: pass every parameter, or typer's Option objects leak in.
-    restart(ui=True, restore=True, max_models=None)
+    restart(ui=True, restore=True, max_models=None, context=None, no_thinking=None)
     _open(url)
 
 
@@ -526,6 +558,9 @@ def load(
             f"  or set LOCAL_LLM_MAX_MODELS={len(models)}, or max_models in settings.toml"
         )
     budget = budget_bytes(total_ram(), st.settings.reserve_gb)
+    # A router started with `up --context N` serves every model at N whatever
+    # its section says, so that is the number to budget against.
+    override, _ = router.overrides()
     out.print("Requested:")
     total = 0
     for name in models:
@@ -546,7 +581,9 @@ def load(
         # and the budget refusal below, far more pessimistic than the fitter
         # itself will ever be.
         floor = int(preset.get(name, "fit-ctx") or 0)
-        if pinned > 0:
+        if override > 0:
+            context = override
+        elif pinned > 0:
             context = pinned
         elif floor > 0:
             context = floor
@@ -557,7 +594,9 @@ def load(
         cache_type = preset.get(name, "cache-type-k") or "f16"
         if header is not None and context > 0:
             estimate = refined_estimate(sizes, header, context, cache_type)
-            if pinned > 0:
+            if override > 0:
+                detail = f"weights + KV cache at c={context} (router --context)"
+            elif pinned > 0:
                 detail = f"weights + KV cache at c={context}"
             elif floor > 0:
                 detail = f"weights + KV cache at floor fit-ctx={context}"
@@ -1873,7 +1912,8 @@ def integrate_codex_cmd(
     ctx: typer.Context,
     yes: bool = typer.Option(False, "-y", "--yes", help="Do not ask."),
 ) -> None:
-    """Write the local-llm provider and profile into Codex's config.toml."""
+    """Write the local-llm provider into Codex's config.toml and the profile into
+    local-llm.config.toml beside it."""
     for line in codex_integration.configure(_harness_context(state(), yes=_yes_from(ctx, yes))):
         out.print(line)
 
@@ -2029,9 +2069,18 @@ def _print_plan(inv, chosen: set[str], sections: list[str]) -> None:
                 for file in entry.files:
                     out.print(f"    {file}")
         elif key == "integrations":
-            candidates = [inv.plugin, inv.agent_config, inv.codex_config]
+            candidates = [inv.plugin, inv.agent_config, inv.codex_config, inv.codex_profile]
             candidates += [*inv.completion_files, *inv.rc_with_block, *inv.rc_with_bash_source]
-            copies = [p for p in [inv.agent_backup, inv.codex_backup, *inv.rc_backups] if p]
+            copies = [
+                p
+                for p in [
+                    inv.agent_backup,
+                    inv.codex_backup,
+                    inv.codex_profile_backup,
+                    *inv.rc_backups,
+                ]
+                if p
+            ]
             for path in candidates:
                 if path and path not in copies:
                     out.print(f"    {path}")

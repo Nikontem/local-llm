@@ -57,7 +57,8 @@ def healthy_paths(tmp_path):
 
 
 def test_everything_ok_on_a_healthy_mac(tmp_path):
-    checks = by_name(run_checks(healthy_paths(tmp_path), Settings(), env=mac_env()))
+    env = mac_env(home=tmp_path, environ={})
+    checks = by_name(run_checks(healthy_paths(tmp_path), Settings(), env=env))
     assert all(c.status == "ok" for c in checks.values()), checks
     assert "0.3.0" in checks["llama-server"].detail
     assert "Apple M4 Pro" in checks["llama-server"].detail
@@ -320,6 +321,40 @@ def test_codex_config_check_warns_when_the_address_moved(tmp_path):
     moved = {c.name: c for c in run_checks(paths, Settings(port=9999), env=env)}
     assert moved["codex config"].status == "warn"
     assert "integrate codex" in moved["codex config"].fix
+
+
+def test_doctor_warns_about_a_legacy_codex_profile(tmp_path):
+    """Codex 0.134+ refuses to start with the table older versions of this tool wrote,
+    and nothing in Codex's own output says which tool put it there."""
+    from local_llm.doctor import Env, run_checks
+    from local_llm.integrations import codex
+    from local_llm.paths import Paths
+    from local_llm.settings import Settings
+
+    paths = Paths.from_env(env={}, home=tmp_path)
+    cx = codex.codex_paths(home=tmp_path, env={})
+    cx.config_dir.mkdir(parents=True)
+    cx.config_file.write_text(
+        '[model_providers.local-llm]\nname = "local-llm"\n'
+        'base_url = "http://127.0.0.1:5678/v1"\nwire_api = "responses"\n\n'
+        '[profiles.local-llm]\nmodel = "m"\nmodel_provider = "local-llm"\n'
+    )
+    env = Env(
+        system="Darwin",
+        machine="arm64",
+        which=lambda name: None,
+        token_status=lambda: TokenStatus("valid", "someone"),
+        port_in_use=lambda host, port: False,
+        home=tmp_path,
+        environ={},
+    )
+    checks = by_name(run_checks(paths, Settings(), env=env))
+    assert checks["codex profile"].status == "warn"
+    assert "[profiles.local-llm]" in checks["codex profile"].detail
+    assert "integrate codex" in checks["codex profile"].fix
+
+    codex.write(cx, codex.provider_table(Settings()), codex.profile_table("m"))
+    assert "codex profile" not in by_name(run_checks(paths, Settings(), env=env))
 
 
 def test_agents_check_reports_how_each_provider_is_configured(tmp_path):

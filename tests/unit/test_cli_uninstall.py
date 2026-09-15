@@ -207,6 +207,24 @@ def test_uninstall_all_removes_the_codex_tables(harness):
     assert not backup.exists(), "the copy this tool made was left beside their config"
 
 
+def test_uninstall_removes_the_codex_profile_file_and_its_backup(harness):
+    h = harness
+    populate(h.tmp)
+    codex = h.tmp / ".codex"
+    profile = codex / "local-llm.config.toml"
+    profile.write_text('model = "b"\nmodel_provider = "local-llm"\n')
+    backup = codex / "local-llm.config.toml.local-llm.bak"
+    backup.write_text('model = "a"\nmodel_provider = "local-llm"\n')
+
+    plan = h.run("uninstall", "--dry-run").output
+    assert str(profile) in plan and str(backup) in plan
+
+    result = h.run("uninstall", "--integrations", "--yes", "--delete-backups")
+    assert result.exit_code == 0, result.output
+    assert not profile.exists() and not backup.exists()
+    assert 'model = "gpt-5"' in (codex / "config.toml").read_text()
+
+
 def test_a_codex_backup_of_ours_goes_even_when_the_config_is_left_alone(harness):
     """It is ours by its name, which nothing else on the machine ever writes."""
     h = harness

@@ -84,7 +84,10 @@ def test_integrate_codex_subcommand(harness):
     h = harness
     result = h.run("integrate", "codex", "--yes")
     assert result.exit_code == 0, result.output
-    assert '[profiles.local-llm]' in (h.tmp / ".codex" / "config.toml").read_text()
+    config = (h.tmp / ".codex" / "config.toml").read_text()
+    assert "[model_providers.local-llm]" in config and "[profiles." not in config
+    profile = (h.tmp / ".codex" / "local-llm.config.toml").read_text()
+    assert 'model_provider = "local-llm"' in profile
 
 
 def test_integrate_opencode_subcommand_still_works(hubbed):
