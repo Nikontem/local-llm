@@ -59,16 +59,16 @@ def test_save_writes_file_and_round_trips(tmp_path):
     assert load_settings(p, env={}) == Settings(port=7001, reserve_gb=4)
 
 
-def test_context_and_no_thinking_come_from_the_environment_but_never_the_file(tmp_path):
+def test_context_and_no_reasoning_come_from_the_environment_but_never_the_file(tmp_path):
     """Both are session overrides for every model the router spawns, not
     preferences: a pinned context switches the load-time fitter off for
     every section, so it must be something you asked for on this run, not
     something a file keeps applying long after you forgot it was there."""
     p = paths_for(tmp_path)
-    s = load_settings(p, env={"LOCAL_LLM_CONTEXT": "131072", "LOCAL_LLM_NO_THINKING": "1"})
-    assert s.context == 131072 and s.no_thinking is True
-    s = load_settings(p, env={}, overrides={"context": 4096, "no_thinking": False})
-    assert s.context == 4096 and s.no_thinking is False
-    assert Settings().context == 0 and Settings().no_thinking is False
-    assert "context" not in dump_settings(Settings(context=4096, no_thinking=True))
-    assert "no_thinking" not in dump_settings(Settings(context=4096, no_thinking=True))
+    s = load_settings(p, env={"LOCAL_LLM_CONTEXT": "131072", "LOCAL_LLM_NO_REASONING": "1"})
+    assert s.context == 131072 and s.no_reasoning is True
+    s = load_settings(p, env={}, overrides={"context": 4096, "no_reasoning": False})
+    assert s.context == 4096 and s.no_reasoning is False
+    assert Settings().context == 0 and Settings().no_reasoning is False
+    assert "context" not in dump_settings(Settings(context=4096, no_reasoning=True))
+    assert "no_reasoning" not in dump_settings(Settings(context=4096, no_reasoning=True))

@@ -2,20 +2,22 @@
 
 ## Unreleased
 
-- `up` and `restart` take `--context N` and `--reasoning`, which override
+- `up` and `restart` take `--context N` and `--no-reasoning`, which override
   `models.ini` for every model for that run of the router: the first loads
   every model at exactly `N` tokens of context whatever its section says, the
-  second turns thinking off for every model that has it, including for a
+  second turns reasoning (thinking) off for every model that has it,
+  through `llama-server`'s own `--reasoning off`, including for a
   Codex session on the `local-llm` profile, which asks for reasoning on
   every request. Both are flags on the router process itself, which
   `llama-server` applies ahead of every section, so `models.ini` is never
   touched or copied. `restart` carries a running router's overrides forward
-  unless told otherwise (`--context 0`, `--thinking`), `status` names the
+  unless told otherwise (`--context 0`, `--reasoning`), `status` names the
   overrides in effect, read from the running process, and `load` budgets
   against the pinned context rather than the section's own. Environment
-  forms: `LOCAL_LLM_CONTEXT`, `LOCAL_LLM_NO_THINKING`. `--reasoning`
-  existed on `up` before this but was undocumented, was lost on every
-  `restart`, and nothing reported it.
+  forms: `LOCAL_LLM_CONTEXT`, `LOCAL_LLM_NO_REASONING`. An undocumented
+  `--no-thinking` existed on `up` before this, was lost on every `restart`,
+  and nothing reported it; for a while it was also spelled `--reasoning`,
+  which read as the opposite of what it did.
 
 - `integrate codex` writes the profile to `~/.codex/local-llm.config.toml`,
   the file Codex 0.134 and later read a profile from, instead of a

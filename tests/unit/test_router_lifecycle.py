@@ -205,11 +205,11 @@ def test_context_and_thinking_overrides_become_router_flags(tmp_path):
     section's own `c` replaced - so these need no rewrite of the preset."""
     _, router, _ = make(tmp_path, FakeBackend())
     args = router.server_args()
-    assert "--ctx-size" not in args and "--chat-template-kwargs" not in args
-    _, router, _ = make(tmp_path, FakeBackend(), context=262144, no_thinking=True)
+    assert "--ctx-size" not in args and "--reasoning" not in args
+    _, router, _ = make(tmp_path, FakeBackend(), context=262144, no_reasoning=True)
     args = router.server_args()
     assert args[args.index("--ctx-size") + 1] == "262144"
-    assert args[args.index("--chat-template-kwargs") + 1] == '{"enable_thinking": false}'
+    assert args[args.index("--reasoning") + 1] == "off"
 
 
 def test_overrides_are_read_back_from_the_running_router(tmp_path):
@@ -217,7 +217,7 @@ def test_overrides_are_read_back_from_the_running_router(tmp_path):
     they report is what the models are actually being served with."""
     backend = FakeBackend()
     backend.spawn_listening = {5678}
-    _, router, _ = make(tmp_path, backend, context=262144, no_thinking=True)
+    _, router, _ = make(tmp_path, backend, context=262144, no_reasoning=True)
     assert router.overrides() == (0, False)          # not running yet
     router.start()
     assert router.overrides() == (262144, True)

@@ -25,11 +25,11 @@ ENV_KEYS: dict[str, str] = {
     "allow_remote": "LOCAL_LLM_ALLOW_REMOTE",
     "api_key": "LOCAL_LLM_API_KEY",
     "context": "LOCAL_LLM_CONTEXT",
-    "no_thinking": "LOCAL_LLM_NO_THINKING",
+    "no_reasoning": "LOCAL_LLM_NO_REASONING",
 }
 
 # Keys that may live in settings.toml. The API key is deliberately absent, and so
-# are `context` and `no_thinking`: both are applied to every model the router
+# are `context` and `no_reasoning`: both are applied to every model the router
 # spawns and a pinned context switches the load-time fitter off for every
 # section, so they are things you ask for on a run (flag or environment), not
 # preferences a file keeps applying after you have forgotten it is there.
@@ -40,7 +40,7 @@ FILE_KEYS: tuple[str, ...] = (
 _TYPES: dict[str, type] = {
     "port": int, "host": str, "max_models": int, "reserve_gb": int, "ui": bool,
     "default_model": str, "allow_remote": bool, "api_key": str,
-    "context": int, "no_thinking": bool,
+    "context": int, "no_reasoning": bool,
 }
 
 _LOOPBACK = ("127.0.0.1", "localhost", "::1")
@@ -58,7 +58,7 @@ class Settings:
     api_key: str = ""
     #: Context size for every model the router spawns; 0 leaves it to models.ini.
     context: int = 0
-    no_thinking: bool = False
+    no_reasoning: bool = False
 
     @property
     def openai_base_url(self) -> str:

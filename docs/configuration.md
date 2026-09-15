@@ -25,8 +25,8 @@ Every key also has an environment variable, which wins over the file:
 (where one exists, e.g. `--max-models`), then the environment variable, then
 `settings.toml`, then the built-in default. The API key
 (`LOCAL_LLM_API_KEY`) is environment-only and never written to disk. So are
-`LOCAL_LLM_CONTEXT` and `LOCAL_LLM_NO_THINKING`, the environment forms of
-`up --context` and `up --reasoning`: both apply to every model the router
+`LOCAL_LLM_CONTEXT` and `LOCAL_LLM_NO_REASONING`, the environment forms of
+`up --context` and `up --no-reasoning`: both apply to every model the router
 spawns and a pinned context switches off the load-time fitting for every
 section, so they are things you ask for on a run, not preferences a file
 keeps applying after you have forgotten it is there (see

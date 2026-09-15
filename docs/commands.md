@@ -17,8 +17,8 @@ Every command, with its flags and what it prints. `local-llm --help` and
 
   Two flags override what `models.ini` says, for every model the router
   serves, for this run of the router only: `--context N` loads every model
-  at exactly `N` tokens of context, and `--reasoning` turns thinking off
-  for every model that has it. See [Overrides for one run](#overrides-for-one-run)
+  at exactly `N` tokens of context, and `--no-reasoning` turns reasoning
+  (thinking) off for every model that has it. See [Overrides for one run](#overrides-for-one-run)
   below before reaching for the first one.
 
 - **`local-llm status`** — the default command; what is running and what is
@@ -41,9 +41,9 @@ Every command, with its flags and what it prints. `local-llm --help` and
     local-llm load <model>   preload one so the first prompt is fast
   ```
 
-  When the router was started with `--context` or `--reasoning`, two more
+  When the router was started with `--context` or `--no-reasoning`, two more
   lines follow `config:` and name the override in effect (`context:  262144
-  for every model (--context)`, `thinking: off (--reasoning)`); they are
+  for every model (--context)`, `reasoning: off (--no-reasoning)`); they are
   read from the running process, not from a state file, so they are what the
   models are actually being served with. Once a model is actually resident,
   its line also shows the context it was given: `qwen2.5-0.5b  pid 52995  1.2 GB  ctx 16384`. That number comes
@@ -85,9 +85,9 @@ Every command, with its flags and what it prints. `local-llm --help` and
   cleaning up any orphan it finds.
 - **`local-llm restart`** — down, then up, then reloads every model that was
   resident before (`--no-restore` to skip that, `--ui`/`--no-ui` to change
-  the web UI mode). A `--context` or `--reasoning` the running router was
+  the web UI mode). A `--context` or `--no-reasoning` the running router was
   started with is carried forward unless you say otherwise: `--context 0`
-  goes back to what `models.ini` says, `--thinking` turns thinking back on.
+  goes back to what `models.ini` says, `--reasoning` turns reasoning back on.
 - **`local-llm ui`** — opens `llama-server`'s own web interface, starting the
   router with `--ui` first if it is not running that way.
 
@@ -99,16 +99,16 @@ only when you know two configured models together fit the budget.
 
 ### Overrides for one run
 
-`up` and `restart` also take `--context N` and `--reasoning`, and both do
+`up` and `restart` also take `--context N` and `--no-reasoning`, and both do
 the same thing in the same way: they become flags on the `llama-server`
 router process itself, which applies its own command line to every model it
 spawns *ahead of* that model's section in `models.ini`. So `--context 262144`
 loads every model at exactly 262144 tokens whether its section says `c =
-65536` or `fit-ctx = 16384`, and `--reasoning` passes
-`enable_thinking: false` to every model's chat template. `models.ini` is
+65536` or `fit-ctx = 16384`, and `--no-reasoning` becomes `llama-server`'s own
+`--reasoning off`, which tells every model's chat template not to think. `models.ini` is
 not touched; `up` without the flag serves it exactly as written again. Both
 are also environment variables, `LOCAL_LLM_CONTEXT` and
-`LOCAL_LLM_NO_THINKING`, and neither is a `settings.toml` key on purpose
+`LOCAL_LLM_NO_REASONING`, and neither is a `settings.toml` key on purpose
 (see [Settings](configuration.md#settings)).
 
 Two things follow from "every model". A pinned context switches off the
@@ -116,15 +116,16 @@ load-time fitting described in [Memory](configuration.md#memory) for every
 section, so a number that suits the model you are about to load can be far
 too large for another one the router autoloads later; `load` budgets
 against the override and refuses when it does not fit, but a chat request
-naming an unloaded model bypasses that check as it always has. And because a
-router flag *replaces* the section key rather than merging with it,
-`--reasoning` also discards any `chat-template-kwargs` a section sets of
-its own — at the time of writing only the gpt-oss sections, which use it for
-`reasoning_effort`.
+naming an unloaded model bypasses that check as it always has. And a router
+flag *replaces* the same key in a section rather than merging with it, which
+is why `--no-reasoning` uses `llama-server`'s dedicated `--reasoning off`
+rather than `--chat-template-kwargs`: a section's own `chat-template-kwargs`
+(at the time of writing only the gpt-oss sections, which use it for
+`reasoning_effort`) is left intact.
 
-`--reasoning` holds for every client of the router, including the coding
+`--no-reasoning` holds for every client of the router, including the coding
 agents: a Codex session started with `codex --profile local-llm` against a
-router running with `--reasoning` gets answers with no reasoning, even
+router running with `--no-reasoning` gets answers with no reasoning, even
 though Codex asks for reasoning on every request, because the setting is
 applied where the prompt is built rather than negotiated per request.
 

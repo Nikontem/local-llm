@@ -45,7 +45,7 @@ with no help from this tool.
   `.codex/config.toml` in preference to the one in your home directory, so if
   one repository ignores the local provider, look there first. Codex asks
   for reasoning on every request (`model_reasoning_effort` in its config);
-  a router started with `local-llm up --reasoning` overrides that for
+  a router started with `local-llm up --no-reasoning` overrides that for
   every model, so a `codex --profile local-llm` session against it gets
   answers with no thinking (see
   [Overrides for one run](commands.md#overrides-for-one-run)).
